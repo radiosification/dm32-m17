@@ -1,0 +1,46 @@
+/build/
+/artifacts/
+/vendor/
+__pycache__/
+
+# Generated firmware and local emulator workspace
+/firmware/core/m17/
+/firmware/core/dv/radio_m17.c
+/firmware/core/dv/radio_m17.h
+/emulator/
+/cpu-benchmark/
+
+# Local research and experiment drivers
+/tools/analyze.py
+/tools/build_probe.py
+/tools/check_firmware_speech.py
+/tools/check_fixed_corpus.py
+/tools/compare_fixed_audio.py
+/tools/compare_fixed_counts.py
+/tools/compare_modes.py
+/tools/compare_nxdn_modem.py
+/tools/firmware_all_tests.py
+/tools/firmware_vm.py
+/tools/fixtures.py
+/tools/package_firmware.py
+/tools/parakeet_check.py
+/tools/prepare_firmware.py
+/tools/run_prototype.py
+/tools/speech_check.py
+/tools/test_fifo_pacing.py
+/tools/test_firmware.py
+/tools/test_firmware_editor.py
+/tools/test_firmware_rx_noise.py
+/tools/test_firmware_tx.py
+/tools/test_firmware_tx_stress.py
+/tools/test_updater.mjs
+/tools/validate_speech.py
+/tests/codec_probe.c
+/tests/decode_firmware_tx.c
+/tests/profile_*
+/tests/test_voice.c
+
+# Local emulator guest harness
+/src/guest.ld
+/src/guest_io.c
+/src/start.S

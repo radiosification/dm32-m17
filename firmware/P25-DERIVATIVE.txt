@@ -1,0 +1,4 @@
+The DM32 M17 tree derives from RadioFoundry and the P25/NXDN development derivative by lyra XE1POC.
+Original RadioFoundry files retain their MIT notices. Retained shared code
+from the derivative keeps its original notices and GPL-3.0-or-later license
+where marked. See LICENSE and COPYING-P25.

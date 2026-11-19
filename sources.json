@@ -1,0 +1,16 @@
+{
+  "dependencies": {
+    "Codec2-mod": {
+      "url": "https://github.com/M17-Project/Codec2-mod.git",
+      "commit": "1e5d64254e1a6d0261545d6520f45335b2d5c026",
+      "branch": "split-no-doubles",
+      "license": "LGPL-2.1"
+    },
+    "libm17": {
+      "url": "https://github.com/M17-Project/libm17.git",
+      "commit": "49c3010ab180108286178051be882947ecc14e74",
+      "license": "GPL-2.0-or-later"
+    }
+  },
+  "toolchain": "csky-elf-gcc on PATH, or set CSKY_BIN to the toolchain bin directory"
+}
