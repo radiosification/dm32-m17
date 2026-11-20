@@ -70,13 +70,14 @@ static void lsp_lpc(const uint32_t *lsp,int32_t ak[11]) {
   w[20]=x1;w[21]=x2;x1=x2=0;
  }
 }
-static void spectrum(const int32_t ak[11],int32_t re[257],int32_t im[257],int32_t power[256],int dense) {
+static void spectrum(const int32_t ak[11],int32_t re[257],int32_t im[257],int32_t power[256]) {
  uint32_t peak=1;int32_t q[11];
  for(unsigned j=0;j<11;j++){uint32_t a=ak[j]<0?0u-(uint32_t)ak[j]:(uint32_t)ak[j];if(a>peak)peak=a;}
  int shift=8-__builtin_clz(peak); /* largest coefficient in [2^23,2^24). */
  for(unsigned j=0;j<11;j++)q[j]=shift>=0?ak[j]>>shift:(int32_t)((uint32_t)ak[j]<<-shift);
  int32_t pr=0,pi=0;
- for(unsigned k=0;k<=256;k+=(k<64?2:4)) {
+ /* Evaluate even bins and interpolate the complex response at odd bins. */
+ for(unsigned k=0;k<=256;k+=2) {
   int32_t r,i;m17_fixed_lpc_response(q,11,k,&r,&i);
   if(k<256){
    uint32_t a=r<0?0u-(uint32_t)r:(uint32_t)r,b=i<0?0u-(uint32_t)i:(uint32_t)i;
@@ -85,15 +86,11 @@ static void spectrum(const int32_t ak[11],int32_t re[257],int32_t im[257],int32_
    int32_t p=log2q(a*a+b*b)+2*(down+shift-22)*65536;
    power[k]=logadd(p,-1306235); /* log2(1e-6) floor from Codec2. */
   }
-  if(dense){
+  if(re){
    if(k){
     int64_t dr=(int64_t)r-pr,di=(int64_t)i-pi;
-    if(k<=64){re[k-1]=pr+(int32_t)(dr/2);im[k-1]=pi+(int32_t)(di/2);}
-    else{
-     re[k-3]=pr+(int32_t)(dr/4);im[k-3]=pi+(int32_t)(di/4);
-     re[k-2]=pr+(int32_t)(dr/2);im[k-2]=pi+(int32_t)(di/2);
-     re[k-1]=pr+(int32_t)(dr*3/4);im[k-1]=pi+(int32_t)(di*3/4);
-    }
+    re[k-1]=pr+(int32_t)(dr/2);
+    im[k-1]=pi+(int32_t)(di/2);
    }
    re[k]=r;im[k]=i;pr=r;pi=i;
   }
@@ -103,24 +100,22 @@ static void amplitudes(const uint32_t lsp[10],uint32_t wo,int L,int32_t energy,i
  int32_t ak[11],ag[11],a[256],g[256],pw[256],inv[256];
  lsp_lpc(lsp,ak);
  for(unsigned j=0;j<11;j++)ag[j]=ak[j]>>j;
- spectrum(ak,re,im,a,1);spectrum(ag,0,0,g,0);
+ spectrum(ak,re,im,a);spectrum(ag,0,0,g);
  int32_t maxinv=INT32_MIN,maxpw=INT32_MIN;
- for(unsigned k=0;k<256;k+=(k<64?2:4)) {
+ for(unsigned k=0;k<256;k+=2) {
   inv[k]=-a[k];pw[k]=inv[k]+(g[k]-a[k])/5;
   if(inv[k]>maxinv)maxinv=inv[k];
   if(pw[k]>maxpw)maxpw=pw[k];
  }
  uint32_t before=0,after=0;
- for(unsigned k=0;k<256;k+=(k<64?2:4)) {
-  unsigned step=k<64?2:4;
-  before+=step*exp2q(inv[k]-maxinv+20*65536);
-  pw[k]=(int32_t)exp2q(pw[k]-maxpw+20*65536);after+=step*(uint32_t)pw[k];
+ for(unsigned k=0;k<256;k+=2) {
+  before+=2*exp2q(inv[k]-maxinv+20*65536);
+  pw[k]=(int32_t)exp2q(pw[k]-maxpw+20*65536);after+=2*(uint32_t)pw[k];
  }
- for(unsigned k=0;k<256;){unsigned step=k<64?2:4;
-  int32_t next=k+step<256?pw[k+step]:pw[k];
-  for(unsigned j=1;j<step;j++)pw[k+j]=pw[k]+(next-pw[k])*(int)j/(int)step;
-  k+=step;
+ for(unsigned k=0;k<254;k+=2){
+  pw[k+1]=pw[k]+(pw[k+2]-pw[k])/2;
  }
+ pw[255]=pw[254];
  for(unsigned k=0;k<64;k++)pw[k]=mul(pw[k],2104533975,30); /* 1.96 */
  int32_t gain=energy+log2q(before)-log2q(after)+maxinv-20*65536;
  for(int m=1;m<=L;m++) {
@@ -372,9 +367,10 @@ static unsigned lpc_analyze(const int32_t windowed[320],uint32_t lsps[10]) {
 void m17_fixed_encoder_init(void *state) {
  fixed_encoder *s=state;memset(s,0,sizeof *s);for(unsigned i=0;i<320;i++)s->speech[i]=1;s->previous_bin=16;
 }
-void m17_fixed_encode(void *state,uint8_t *bits,const int16_t *speech) {
- fixed_encoder *s=state;int32_t *windowed=s->windowed,*input=s->input,*re=s->re,*im=s->im;uint32_t *power=s->power,lsps[10];
- nlp_advance(s,speech);nlp_advance(s,speech+80);
+static unsigned analyze_voicing(fixed_encoder *s,int *voiced)
+{
+ int32_t *windowed=s->windowed,*input=s->input,*re=s->re,*im=s->im;
+ uint32_t *power=s->power;
  unsigned initial=pitch_estimate(s);memset(input,0,512*sizeof *input);
  for(unsigned j=21;j<300;j++)windowed[j]=((int32_t)s->speech[j]*c2_window[j])>>15;
  for(unsigned j=0;j<139;j++){input[j]=windowed[j+160];input[373+j]=windowed[j+21];}
@@ -385,11 +381,22 @@ void m17_fixed_encode(void *state,uint8_t *bits,const int16_t *speech) {
  for(unsigned j=0;j<257;j++){re[j]>>=shift;im[j]>>=shift;power[j]=(uint32_t)(re[j]*re[j]+im[j]*im[j]);}
  for(unsigned j=1;j<256;j++){re[512-j]=re[j];im[512-j]=-im[j];power[512-j]=power[j];}
  unsigned period=refine_pitch(power,initial);
- int voiced=voicing(re,im,power,period);
+ *voiced=voicing(re,im,power,period);
+ return period;
+}
+
+void m17_fixed_encode(void *state,uint8_t *bits,const int16_t *speech) {
+ fixed_encoder *s=state;
+ int first_voiced,voiced;
+ uint32_t lsps[10];
+ nlp_advance(s,speech);
+ (void)analyze_voicing(s,&first_voiced);
+ nlp_advance(s,speech+80);
+ unsigned period=analyze_voicing(s,&voiced);
  uint32_t wo=(uint32_t)(((uint64_t)1<<40)/period);
  int wi=((int32_t)wo-26843546+734003)/1468006;if(wi<0)wi=0;if(wi>127)wi=127;
- unsigned ei=lpc_analyze(windowed,lsps),at=0;memset(bits,0,8);
- pack(bits,&at,(unsigned)voiced,1);pack(bits,&at,(unsigned)voiced,1);pack(bits,&at,(unsigned)wi,7);pack(bits,&at,ei,5);
+ unsigned ei=lpc_analyze(s->windowed,lsps),at=0;memset(bits,0,8);
+ pack(bits,&at,(unsigned)first_voiced,1);pack(bits,&at,(unsigned)voiced,1);pack(bits,&at,(unsigned)wi,7);pack(bits,&at,ei,5);
  unsigned last=0;
  for(unsigned j=0;j<10;j++){
   int32_t target=(int32_t)(((uint64_t)lsps[j]*8000)>>16)-(int32_t)(last<<16);
