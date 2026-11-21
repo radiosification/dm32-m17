@@ -1188,7 +1188,7 @@ static const ui_scr_def_t chlist_screen = {
 
 enum { CE_NAME, CE_NUMBER, CE_MODE, CE_RX, CE_TX, CE_POWER, CE_RX_ONLY, CE_BW, CE_RX_TONE, CE_TX_TONE, CE_VOX,
        CE_NAC, CE_TG, CE_CC, CE_TS, CE_CONTACT, CE_LIST, CE_ID, CE_DMO, CE_BEEP, CE_ALIAS1, CE_ALIAS2, CE_TOT, CE_SCAN, CE_ECO,
-       CE_ZONES, CE_GO, CE_SHARE, CE_SAVE, CE_SAVE_NEW, CE_COUNT, CE_NONE = 0xFF };
+       CE_ZONES, CE_GO, CE_SHARE, CE_SAVE, CE_SAVE_NEW, CE_DELETE, CE_COUNT, CE_NONE = 0xFF };
 
 static channel_t ced_ch;		// what the screen shows (the working copy when editing)
 static uint16_t ced_num;		// its number, 0 = no such channel
@@ -1306,11 +1306,11 @@ static void ced_build(void)
 		if ((fm_only && (dmr || dv)) || (dmr_only && !dmr && !(dv && r == CE_ID)) || (dv_only && !dv) ||
 		    (r == CE_MODE && !(CONFIG_DMR || CONFIG_M17)))
 			continue;
-		if ((r == CE_ZONES || r == CE_GO || r == CE_SHARE || r == CE_SAVE_NEW) && fresh)
+		if ((r == CE_ZONES || r == CE_GO || r == CE_SHARE || r == CE_SAVE_NEW || r == CE_DELETE) && fresh)
 			continue;
 		if (r == CE_SHARE && !CONFIG_ZONE_SHARE)
 			continue;
-		if ((r == CE_SAVE && !(changed || fresh)) || ((r == CE_SAVE || r == CE_SAVE_NEW) && !edit))
+		if ((r == CE_SAVE && !(changed || fresh)) || ((r == CE_SAVE || r == CE_SAVE_NEW || r == CE_DELETE) && !edit))
 			continue;
 		ced_rows[ced_n++] = r;
 	}
@@ -1448,7 +1448,7 @@ static void chinfo_item(uint16_t i, ui_item_t *it)
 		TRN("Timeslot"), TRN("TX contact"), TRN("RX group list"), TRN("Own ID"), TRN("Direct mode"),
 		TRN("Talk permit beeps"), TRN("Talker alias TS1"), TRN("Talker alias TS2"), TRN("TX time-out"), TRN("Scan"),
 		TRN("Battery saver"), TRN("Zones"), TRN("Tune to this ch"), TRN(GLYPH_SHARE " Share channel to..."),
-		TRN("Save"), TRN("Save as new channel") };
+		TRN("Save"), TRN("Save as new channel"), TRN("Delete channel") };
 	const channel_t *ch = &ced_ch;
 	if (i >= ced_n)
 		return;
@@ -1629,7 +1629,7 @@ static const char *ced_problem(void)
 		return TR("Receive only band: set FM");
 	if (CONFIG_DMR && c->mode == RADIO_MODE_DMR && c->contact == 0)
 		return TR("Pick a TX contact first");
-	if (codeplug_mode_digital_voice(c->mode) && c->talkgroup == 0)
+	if (c->mode != RADIO_MODE_M17 && codeplug_mode_digital_voice(c->mode) && c->talkgroup == 0)
 		return TR("Set a talkgroup first");
 	return NULL;
 }
@@ -2024,6 +2024,7 @@ static void chinfo_select(uint16_t i, bool hold)
 		break;
 	case CE_SAVE: ced_save(false); break;
 	case CE_SAVE_NEW: ced_save(true); break;
+	case CE_DELETE: ui_push(SCR_CHDELETE, ced_num); break;
 	default: break;
 	}
 	ui_dirty();
@@ -2047,6 +2048,40 @@ static const ui_scr_def_t chinfo_screen = {
 };
 
 #if CONFIG_CHANNEL_EDIT
+static uint16_t chdelete_count(void) { return 2; }
+
+static void chdelete_item(uint16_t i, ui_item_t *it)
+{
+	str_copy(it->label, sizeof it->label, i == 0 ? TR("No, keep it") : TR("Yes, delete"));
+	if (i == 1)
+		it->flags |= UI_ITEM_WARN;
+}
+
+static void chdelete_select(uint16_t i, bool hold)
+{
+	(void)hold;
+	if (i == 0) {
+		ui_pop();
+	} else if (ui_svc_delete_channel(ui_frame()->arg)) {
+		ui_pop();
+		ui_pop();
+		ui_toast(TR("Deleting channel"));
+	} else {
+		ui_toast(TR("Couldn't delete the channel"));
+	}
+}
+
+static const char *chdelete_body(void)
+{
+	return TR("Delete this channel and remove it from every zone?");
+}
+
+static const ui_scr_def_t chdelete_screen = {
+	.name = "channel-delete", .flags = SF_LIST, .prefix = TRN("Delete channel"),
+	.hint = TRN("OK choose  Back cancel"),
+	.count = chdelete_count, .item = chdelete_item, .select = chdelete_select, .body = chdelete_body,
+};
+
 // ======================= Leaving the channel editor with changes (defaults to keep editing; P7) ===============
 
 static uint16_t discard_count(void) { return 2; }
@@ -3726,7 +3761,6 @@ static const set_item_t s_talk[] = {
 #endif
 	NUMBER(TRN("Mic gain"), NULL, UI_SET_MIC_GAIN, 0, 10, 1, NULL),
 	TOGGLE(TRN("M17 mic AGC"), "automatic gain level", UI_SET_MIC_AGC),
-	TOGGLE(TRN("M17 noise reduction"), "mic noise suppression background", UI_SET_NOISE_REDUCTION),
 #if CONFIG_DUAL_WATCH
 	TOGGLE(TRN("Dual watch talk back"), "reply other channel A B", UI_SET_DUAL_TALK_BACK),
 	LIST(TRN("Dual watch delay"), "resume wait reply A B", UI_SET_DUAL_DELAY_MS, v_dual_wait, n_dual_wait),
@@ -3980,11 +4014,6 @@ static const char *set_why_not(const set_item_t *s)
 		if (!mic_gain_available())
 			return TR("Mic gain: not in this build");
 		return mic_agc_on() ? TR("Mic AGC sets the level") : NULL;
-	case UI_SET_NOISE_REDUCTION:
-		if(CONFIG_M17)return NULL;
-		if (!CONFIG_DMR)
-			return TR("Noise reduction: not in this build");
-		return vocoder_has(VOCODER_OPT_NOISE_REDUCTION) ? NULL : TR("Not on this radio");
 	case UI_SET_MIC_AGC:
 		if(CONFIG_M17)return NULL;
 		if (!CONFIG_DMR)
@@ -4474,7 +4503,7 @@ const ui_scr_def_t *const ui_scr[SCR_COUNT] = {
 #if CONFIG_CHANNEL_LIST
 	[SCR_CHANNELS] = &chlist_screen, [SCR_CHANNEL] = &chinfo_screen,
 #if CONFIG_CHANNEL_EDIT
-	[SCR_TEXT] = &text_screen, [SCR_DISCARD] = &discard_screen,
+	[SCR_TEXT] = &text_screen, [SCR_DISCARD] = &discard_screen, [SCR_CHDELETE] = &chdelete_screen,
 #if CONFIG_ZONE_EDIT
 	[SCR_ZCHANNEL] = &zchan_screen, [SCR_ZPICK] = &zpick_screen, [SCR_ZONEEDIT] = &zopt_screen,
 	[SCR_ZONEDEL] = &zdel_screen, [SCR_CHZONES] = &chz_screen,

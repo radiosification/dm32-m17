@@ -2785,10 +2785,6 @@ msgid "Mic AGC"
 msgstr "AGC mic"
 
 #: core/ui/ui_menus.c
-msgid "Mic noise reduction"
-msgstr "Riduz. rumore mic"
-
-#: core/ui/ui_menus.c
 msgid "Monitor by default"
 msgstr "Monitor predef."
 
@@ -2983,10 +2979,6 @@ msgstr "Guadagno mic: non in questa build"
 #: core/ui/ui_menus.c
 msgid "Mic AGC sets the level"
 msgstr "L'AGC mic imposta il livello"
-
-#: core/ui/ui_menus.c
-msgid "Noise reduction: not in this build"
-msgstr "Riduz. rumore: non in questa build"
 
 #: core/ui/ui_menus.c
 msgid "Not on this radio"

@@ -237,6 +237,7 @@ typedef struct {
 	uint32_t retune_due_ms;
 	uint32_t tx_start_ms;
 	uint8_t close_count;		// polls in a row above the close threshold
+	bool deny_rx;			// FM reception still audible during a busy-channel PTT refusal
 	uint8_t tone_count;		// polls in a row disagreeing with view.tone_ok (debounce)
 	int16_t rssi_published;
 	int8_t audio_out;		// last speaker / LED settings sent to the board, -1 = not yet

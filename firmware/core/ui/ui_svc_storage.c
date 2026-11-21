@@ -191,9 +191,6 @@ int32_t ui_svc_setting_get(uint8_t id)
 	case UI_SET_TFTP_WRITE:
 		settings_read(&st);
 		return (st.net_flags & SETTINGS_NET_TFTP_NO_WRITE) == 0;
-	case UI_SET_NOISE_REDUCTION:
-		settings_read(&st);
-		return (st.accent & SETTINGS_AUDIO_NO_NOISE_REDUCTION) == 0;
 	case UI_SET_MIC_AGC:
 		settings_read(&st);
 		return (st.accent & SETTINGS_AUDIO_AGC) != 0;
@@ -333,16 +330,11 @@ bool ui_svc_setting_set(uint8_t id, int32_t value)
 					  (st->net_flags | SETTINGS_NET_TFTP_NO_WRITE));
 		settings_end(hal_millis());
 		return true;
-	case UI_SET_NOISE_REDUCTION:
-	case UI_SET_MIC_AGC: {
-		// The stored bit is set for "on" with AGC, for "off" with noise reduction
-		uint8_t bit = id == UI_SET_MIC_AGC ? SETTINGS_AUDIO_AGC : SETTINGS_AUDIO_NO_NOISE_REDUCTION;
-		bool set = (value != 0) == (id == UI_SET_MIC_AGC);
+	case UI_SET_MIC_AGC:
 		st = settings_begin();
-		st->accent = (uint8_t)(set ? (st->accent | bit) : (st->accent & ~bit));
+		st->accent = (uint8_t)(value != 0 ? st->accent | SETTINGS_AUDIO_AGC : st->accent & ~SETTINGS_AUDIO_AGC);
 		settings_end(hal_millis());
 		return true;
-	}
 	case UI_SET_VFO_STEP:
 		return true;	// ui_svc_apply hands it to the radio core, which saves it
 #if CONFIG_DUAL_WATCH
@@ -585,6 +577,20 @@ bool ui_svc_write_channel(uint16_t number, const channel_t *ch)
 	return cp_post(write_channel_job);
 }
 
+static void delete_channel_job(void *ctx)
+{
+	if (!codeplug_delete_channel((uint16_t)(uintptr_t)ctx)) {
+		save_failed(TRN("Couldn't delete the channel"));
+	}
+}
+
+bool ui_svc_delete_channel(uint16_t number)
+{
+	if (number == 0 || number > CODEPLUG_CHANNELS_MAX || job_busy() || codeplug_foreign()) {
+		return false;
+	}
+	return storage_job_post(delete_channel_job, (void *)(uintptr_t)number);
+}
 
 #if CONFIG_ZONE_EDIT
 // The zone editor's changes (ui.md 2.2), queued: Move up pressed again while the last move is still being written

@@ -367,15 +367,22 @@ static void find_max(void)
 
 // In-use bitmaps, then the frequencies of every marked record: an erased bank (all 0xFF) fails the BCD check. Counts
 // the channels' evidence on the way: a marked record that isn't erased is good with valid frequencies and name
-static void index_channels(void)
+static const uint8_t zero[32];
+
+static bool index_channels(void)
 {
 	uint8_t r[CH_SIZE];
+	bool stored_empty = true;
 
 	for (unsigned bank = 0; bank < CH_BANKS; bank++) {
 		uint8_t *bits = &used[bank * (CH_PER_BANK / 8u)];
 		if (!flash_read(bank_bitmap(bank), bits, CH_PER_BANK / 8u)) {
 			memset(bits, 0, CH_PER_BANK / 8u);
+			stored_empty = false;
 			continue;
+		}
+		if (memcmp(bits, zero, CH_PER_BANK / 8u) != 0) {
+			stored_empty = false;
 		}
 		for (unsigned k = 0; k < CH_PER_BANK; k++) {
 			uint16_t number = (uint16_t)(bank * CH_PER_BANK + k + 1u);
@@ -394,6 +401,7 @@ static void index_channels(void)
 		}
 	}
 	find_max();
+	return stored_empty;
 }
 
 static void index_zones(void)
@@ -473,8 +481,9 @@ static codeplug_source_t index_all(void)
 	zone_count = 0;
 	ev_good = ev_bad = 0;
 	index_builtin();
+	bool stored_empty = false;
 	if (have_flash()) {
-		index_channels();
+		stored_empty = index_channels();
 		index_evidence();
 	}
 	// Records in use that fail the rule are another firmware's codeplug: shown as none (the built-in set), the bytes
@@ -482,8 +491,10 @@ static codeplug_source_t index_all(void)
 	if (codeplug_foreign()) {
 		memset(used, 0, sizeof(used));
 		channel_max = 0;
+		stored_empty = false;
 	}
-	if (channel_max > 0) {
+	// Zeroed bitmaps identify a stored codeplug whose last channel was deleted.
+	if (channel_max > 0 || stored_empty) {
 		index_zones();
 		source = CODEPLUG_OPENFW;
 	} else {
@@ -842,8 +853,6 @@ bool codeplug_zone(uint16_t index, zone_t *out)
 
 // --- Editing ---
 
-static const uint8_t zero[32];	// what the bitmaps and the quick keys are cleared with
-
 // A codeplug to edit: the built-in set first becomes a stored one (its channels written, the bitmaps, zones and
 // lists that may hold junk from other firmware cleared). Never over another firmware's codeplug (foreign): only
 // codeplug_start_new clears that
@@ -945,13 +954,46 @@ bool codeplug_set_channel(uint16_t number, const channel_t *ch)
 	return ok;
 }
 
+// Remove the stored references before freeing the number for another channel.
+// Work on the records directly so the existing zone layout and other entries stay intact.
+static bool unlink_channel_zones(uint16_t number, bool *changed)
+{
+	uint8_t r[ZONE_RECORD_80];
+	for (uint16_t zi = 0; zi < zone_count; zi++) {
+		uint32_t addr = ZONE_DATA + zone_slot[zi] * zone_record;
+		if (!flash_read(addr, r, zone_record)) {
+			return false;
+		}
+		uint8_t *members = r + ZONE_NAME_LEN;
+		unsigned read = 0, keep = 0;
+		for (; read < zone_channels; read++) {
+			uint16_t member = le16(&members[2u * read]);
+			if (member == 0) {
+				break;
+			}
+			if (member != number) {
+				put16(&members[2u * keep++], member);
+			}
+		}
+		if (keep != read) {
+			memset(&members[2u * keep], 0, 2u * (read - keep));
+			if (!flash_write(addr, r, zone_record)) {
+				return false;
+			}
+			*changed = true;
+		}
+	}
+	return true;
+}
+
 bool codeplug_delete_channel(uint16_t number)
 {
 	if (number < 1 || number > CH_MAX) {
 		return false;
 	}
 	storage_lock();
-	bool ok = materialize();
+	bool changed = false;
+	bool ok = materialize() && unlink_channel_zones(number, &changed);
 	if (ok && is_used(number)) {
 		set_used(number, false);
 		ok = write_bitmap(number);
@@ -961,6 +1003,8 @@ bool codeplug_delete_channel(uint16_t number)
 	}
 	if (ok) {
 		find_max();
+	}
+	if (ok || changed) {
 		serial++;
 	}
 	storage_unlock();

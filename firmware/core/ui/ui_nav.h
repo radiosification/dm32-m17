@@ -36,6 +36,7 @@ typedef enum {
 	SCR_LANGUAGE,			// Settings > Display > Language: every language, those not built dimmed
 	SCR_CP_FOREIGN,			// another firmware's codeplug: what the first edit does with it (ui_svc_codeplug_answer)
 	SCR_MESSAGE_WRITE, SCR_MESSAGE_REVIEW, // DMR free text and its send confirmation (CONFIG_DMR_SMS)
+	SCR_CHDELETE,			// confirm deletion of a stored channel and its zone entries
 	SCR_COUNT
 } ui_scr_t;
 

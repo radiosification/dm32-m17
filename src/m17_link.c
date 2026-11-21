@@ -26,9 +26,17 @@ static bool sync_matches(const int16_t *s,const int8_t *pattern) {
 void m17_receiver_init(m17_receiver *r,m17_payload_sink sink,void *ctx) {
  memset(r,0,sizeof *r);r->sink=sink;r->ctx=ctx;
 }
+void m17_receiver_end(m17_receiver *r) {
+ r->ended=true;r->have_lsf=false;r->have_fn=false;r->lich_mask=0;
+}
+static void start_call(m17_receiver *r,const lsf_t *lsf) {
+ r->lsf=*lsf;r->have_lsf=true;r->ended=false;r->have_fn=false;
+ r->lich_mask=0;r->lsf_count++;
+}
 int m17_receive_frame(m17_receiver *r,const int16_t s[192]) {
+ enum { STREAM_CODED_BITS=272, STREAM_PUNCTURES=2*((2+16)*8+4)-STREAM_CODED_BITS };
  uint16_t soft[368];uint8_t data[31];
- if(sync_matches(s,eot_symbols)) {r->ended=true;r->have_lsf=false;return 0;}
+ if(sync_matches(s,eot_symbols)) {m17_receiver_end(r);return 0;}
  bool lsf=sync_matches(s,lsf_sync_symbols),stream=sync_matches(s,str_sync_symbols);
  if(!lsf&&!stream) {r->bad++;return -1;}
  soft_bits(soft,s+8);
@@ -36,18 +44,21 @@ int m17_receive_frame(m17_receiver *r,const int16_t s[192]) {
   viterbi_decode_punctured_ctx(&r->fec,data,soft,puncture_pattern_1,368,61);
   lsf_t l;memcpy(&l,data+1,30);
   if(!good_lsf(&l)) {r->have_lsf=false;r->lich_mask=0;r->bad++;return -1;}
-  r->lsf=l;r->have_lsf=true;r->ended=false;r->have_fn=false;r->lich_mask=0;r->lsf_count++;
+  start_call(r,&l);
   return 0;
  }
  uint8_t lich[6];
  if(decode_LICH(lich,soft)==0 && (lich[5]>>5)<6) {
   unsigned idx=lich[5]>>5;
   memcpy((uint8_t *)&r->partial+idx*5,lich,5);r->lich_mask|=1u<<idx;
-  if(r->lich_mask==63 && good_lsf(&r->partial) && !r->have_lsf) {
-   r->lsf=r->partial;r->have_lsf=true;r->ended=false;r->lsf_count++;
-  }
+  if(!r->have_lsf && r->lich_mask==63 && good_lsf(&r->partial))start_call(r,&r->partial);
  }
- uint32_t cost=viterbi_decode_punctured_ctx(&r->fec,data,soft+96,puncture_pattern_2,272,12);
+ if(viterbi_decode_punctured_ctx(&r->fec,data,soft+96,puncture_pattern_2,STREAM_CODED_BITS,12)==UINT32_MAX) {
+  r->bad++;return -1;
+ }
+ /* libm17 traces back from state zero (the terminated stream), but returns
+  * the cheapest of all end states. Score the path we actually decoded. */
+ uint32_t cost=r->fec.metrics[r->fec.cur][0]-STREAM_PUNCTURES*32767u;
  /* Soft observations carry an unavoidable cost even when every hard bit
   * agrees with the decoded path. Limit corrections above that floor, not
   * uncertainty in otherwise valid voice frames. */
@@ -57,7 +68,7 @@ int m17_receive_frame(m17_receiver *r,const int16_t s[192]) {
  }
  /* Keep at least 75% mean soft-decision certainty: subtracting the floor
   * alone must not admit an erased payload whose paths all look alike. */
- if(floor>65535u*272u/8u || cost>floor+65535u*12) {r->bad++;return -1;}
+ if(floor>65535u*STREAM_CODED_BITS/8u || cost>floor+65535u*12) {r->bad++;return -1;}
  uint16_t fn=((uint16_t)data[1]<<8)|data[2],seq=fn&0x7fff;
  if(!r->have_lsf || r->ended)return 0;
  if(r->have_fn) {
@@ -67,7 +78,7 @@ int m17_receive_frame(m17_receiver *r,const int16_t s[192]) {
  }
  r->last_fn=seq;r->have_fn=true;r->frames++;
  if(r->sink)r->sink(r->ctx,data+3,fn);
- if(fn&0x8000) {r->ended=true;r->have_lsf=false;}
+ if(fn&0x8000)m17_receiver_end(r);
  return 1;
 }
 void m17_pack_phy(const int8_t s[192],uint8_t out[48]) {

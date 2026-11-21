@@ -74,6 +74,8 @@ bool ui_svc_save_channel(void);
 // Store a whole channel (the channel editor, ui.md 2.1) at number 1..CODEPLUG_CHANNELS_MAX, as a storage job like
 // ui_svc_save_channel. false: a write is still going on, or no codeplug storage in this build
 bool ui_svc_write_channel(uint16_t number, const channel_t *ch);
+// Delete a channel and its stored zone references through a storage job.
+bool ui_svc_delete_channel(uint16_t number);
 // The zone editor (ui.md 2.2): op is queued and runs as a storage job (zone_edit_apply), in order; the radio follows
 // zone indexes it moves. A refusal in the job raises UI_EV_SAVE_FAILED and drops what was queued after it. false:
 // the queue is full, or no codeplug storage in this build. ui_svc_zone_poll (every UI tick) starts the job when
@@ -309,8 +311,7 @@ typedef enum {
 	UI_SET_VFO_STEP,
 	// Dual watch on one receiver: the wait after a signal, ms (Settings > Talk; radio_settings_t.dual_delay_ms)
 	UI_SET_DUAL_DELAY_MS,
-	UI_SET_NOISE_REDUCTION,	// the vocoder's mic noise reduction on DMR TX (Settings > Talk & listen; accent bits 6-7)
-	UI_SET_MIC_AGC,		// the vocoder's mic AGC on DMR TX (accent bits 6-7); while on, mic gain is step 5 and dimmed
+	UI_SET_MIC_AGC,		// automatic mic gain (Settings > Talk & listen; accent bit 7)
 	UI_SET_SFR_RX,		// what an SFR user channel hears, dmr_sfr_rx_t (Settings > Talk, CONFIG_SFR; radio_settings_t.sfr_rx)
 	UI_SET_SFR_CWID,	// the SFR repeater's CW ID interval code 0..4 (Settings > Talk, CONFIG_SFR_CWID; radio_settings_t.sfr_cwid)
 	// The VFO's automatic step in the broadcast band (Settings > Talk, CONFIG_BCAST_FM; radio_settings_t.bcast_step) in

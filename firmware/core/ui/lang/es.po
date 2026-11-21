@@ -2785,10 +2785,6 @@ msgid "Mic AGC"
 msgstr "AGC mic"
 
 #: core/ui/ui_menus.c
-msgid "Mic noise reduction"
-msgstr "Reducción ruido mic"
-
-#: core/ui/ui_menus.c
 msgid "Monitor by default"
 msgstr "Monitor por defecto"
 
@@ -2983,10 +2979,6 @@ msgstr "Ganancia mic: no disponible"
 #: core/ui/ui_menus.c
 msgid "Mic AGC sets the level"
 msgstr "El AGC mic fija el nivel"
-
-#: core/ui/ui_menus.c
-msgid "Noise reduction: not in this build"
-msgstr "Reducción ruido: no disponible"
 
 #: core/ui/ui_menus.c
 msgid "Not on this radio"

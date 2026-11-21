@@ -10,7 +10,7 @@ CC = (Path(_toolchain_bin).expanduser().absolute() / 'csky-elf-gcc'
       if _toolchain_bin else Path(shutil.which('csky-elf-gcc') or 'csky-elf-gcc'))
 OUT=ROOT/'build';OUT.mkdir(exist_ok=True)
 C2=ROOT/'vendor/Codec2-mod';M17=ROOT/'vendor/libm17'
-FLAGS=['-mcpu=ck803s','-mlittle-endian','-mno-high-registers','-msoft-float','-O3','-ffast-math','-I'+str(OUT),'-ffunction-sections','-fdata-sections','-fstack-usage','-I'+str(C2/'inc'),'-I'+str(M17),'-I'+str(ROOT/'src'),'-I'+str(OUT)]
+FLAGS=['-mcpu=ck803s','-mlittle-endian','-mno-high-registers','-msoft-float','-O3','-ffast-math','-I'+str(OUT),'-ffunction-sections','-fdata-sections','-fstack-usage','-I'+str(C2/'inc'),'-I'+str(M17),'-I'+str(ROOT/'src')]
 def run(cmd):subprocess.run([str(x) for x in cmd],check=True,cwd=ROOT)
 def check_integer_codec(obj):
  symbols=subprocess.check_output([str(CC.with_name('csky-elf-nm')),'-u',str(obj)],text=True).split()

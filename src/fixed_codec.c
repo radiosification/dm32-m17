@@ -10,9 +10,10 @@
 #include "wide_math.h"
 #include <string.h>
 #include <limits.h>
+#include <stdbool.h>
 
 typedef struct __attribute__((may_alias)) {
- uint32_t random,phase,wo,lsp[10];
+ uint32_t random,phase,wo,lsp[10],last_pcm_peak;
  int32_t energy,bg,overlap[160];
  int voiced;
 } fixed_decoder;
@@ -129,6 +130,18 @@ static void amplitudes(const uint32_t lsp[10],uint32_t wo,int L,int32_t energy,i
  }
  if(wo<80530637u)amp[1]=mul(amp[1],34359738,30); /* 150 Hz correction */
 }
+static int16_t q8_to_pcm(int32_t sample) {
+    const int32_t pcm = sample / 256;
+    return pcm > 32767 ? 32767 : pcm < -32767 ? -32767 : (int16_t)pcm;
+}
+static uint32_t sample_peak(const int32_t *samples, unsigned count) {
+ uint32_t peak=0;
+ for(unsigned j=0;j<count;j++) {
+  uint32_t magnitude=samples[j]<0?0u-(uint32_t)samples[j]:(uint32_t)samples[j];
+  if(magnitude>peak)peak=magnitude;
+ }
+ return peak;
+}
 static void synthesize(fixed_decoder *s,int16_t *out,uint32_t wo,int L,int voiced,int32_t amp[81],const int32_t re[257],const int32_t im[257]) {
  int32_t r[257]={0},i[257]={0},pcm[512];
  uint32_t energy=1,maximum=1;
@@ -159,23 +172,106 @@ static void synthesize(fixed_decoder *s,int16_t *out,uint32_t wo,int L,int voice
  memmove(s->overlap,s->overlap+80,79*sizeof(int32_t));s->overlap[79]=0;
  for(unsigned j=0;j<79;j++)s->overlap[j]+=mul(pcm[433+j],(int32_t)j*13421773,30);
  for(unsigned j=0;j<=80;j++)s->overlap[79+j]=mul(pcm[j],(j?81-(int32_t)j:79)*13421773,30);
- uint32_t peak=0;
- for(unsigned j=0;j<80;j++){uint32_t a=s->overlap[j]<0?0u-(uint32_t)s->overlap[j]:(uint32_t)s->overlap[j];if(a>peak)peak=a;}
+ uint32_t peak=sample_peak(s->overlap,80);
  if(peak>30000*256){uint32_t ratio=(30000u*256u)/(peak>>15);uint32_t gain=ratio*ratio>>15;
-  for(unsigned j=0;j<80;j++)s->overlap[j]=mul(s->overlap[j],(int32_t)gain,15);}
- for(unsigned j=0;j<80;j++){int32_t x=s->overlap[j]/256;out[j]=x>32767?32767:x< -32767?-32767:(int16_t)x;}
+  for(unsigned j=0;j<80;j++)s->overlap[j]=mul(s->overlap[j],(int32_t)gain,15);
+  peak=sample_peak(s->overlap,80);
+ }
+ peak>>=8;
+ s->last_pcm_peak=peak>32767u?32767u:peak;
+ for(unsigned j=0;j<80;j++)out[j]=q8_to_pcm(s->overlap[j]);
+}
+static void conceal_packet(fixed_decoder *s, int16_t *speech) {
+ /* The tapered overlap has not passed synthesis peak control. Scale it
+  * as a block to preserve the fade and stay below the last playback peak. */
+ const uint32_t peak=(sample_peak(s->overlap+80,79)+255u)>>8;
+ if(peak>s->last_pcm_peak) {
+  const int32_t gain=(int32_t)((s->last_pcm_peak<<15)/peak);
+  for(unsigned j=0;j<79;j++)speech[j]=q8_to_pcm(mul(s->overlap[80+j],gain,15));
+ } else {
+  for(unsigned j=0;j<79;j++)speech[j]=q8_to_pcm(s->overlap[80+j]);
+ }
+ memset(speech+79,0,81*sizeof *speech);
+ memset(s->overlap,0,sizeof s->overlap);
+ s->last_pcm_peak=0;
 }
 void m17_fixed_decoder_init(void *state) {
  fixed_decoder *s=state;memset(s,0,sizeof *s);s->random=1;s->wo=26843546;
  for(unsigned j=0;j<10;j++)s->lsp[j]=(uint32_t)(((uint64_t)j<<31)/11);
 }
+/* For an invalid LSP vector, try the 50 possible one-bit changes to
+ * its Gray-coded index fields. Score the reconstructed frequencies. */
+static bool repair_lsp(const fixed_decoder *s, unsigned lsp_hz[10],
+                       const unsigned indices[10])
+{
+    if (s->lsp[0] == 0)
+        return false; /* No previous accepted shape to compare. */
+
+    int32_t previous[10];
+    for (unsigned j = 0; j < 10; ++j)
+        previous[j] = (int32_t)(((uint64_t)s->lsp[j] * 8000 + (1ull << 31)) >> 32);
+
+    uint32_t best = UINT32_MAX, runner_up = UINT32_MAX;
+    unsigned best_field = 0;
+    int32_t correction = 0;
+    for (unsigned field = 0; field < 10; ++field) {
+        const unsigned index = indices[field];
+        const unsigned gray = index ^ (index >> 1);
+        for (unsigned bit = 1; bit < 32; bit <<= 1) {
+            unsigned candidate = gray ^ bit;
+            candidate ^= candidate >> 1;
+            candidate ^= candidate >> 2;
+            candidate ^= candidate >> 4;
+            const int32_t shift = (int32_t)delta_lsp_cb[field][candidate] -
+                                  (int32_t)delta_lsp_cb[field][index];
+            if ((int32_t)lsp_hz[9] + shift >= 4000)
+                continue;
+            uint32_t cost = 0;
+            for (unsigned j = 0; j < 10; ++j) {
+                const int32_t delta = (int32_t)lsp_hz[j] +
+                                     (j >= field ? shift : 0) - previous[j];
+                if (delta < -600 || delta > 600) {
+                    cost = UINT32_MAX;
+                    break;
+                }
+                cost += (uint32_t)(delta * delta);
+            }
+            if (cost < best) {
+                runner_up = best;
+                best = cost;
+                best_field = field;
+                correction = shift;
+            } else if (cost < runner_up) {
+                runner_up = cost;
+            }
+        }
+    }
+    if (best > 10u * 250 * 250 || runner_up <= best + best / 16 + 1250u)
+        return false;
+    for (unsigned j = best_field; j < 10; ++j)
+        lsp_hz[j] = (unsigned)((int32_t)lsp_hz[j] + correction);
+    return true;
+}
+
 void m17_fixed_decode(void *state,int16_t *speech,const uint8_t *bits) {
  fixed_decoder *s=state;unsigned at=0;int v0=unpack(bits,&at,1),v1=unpack(bits,&at,1);
  unsigned wi=(unsigned)unpack(bits,&at,7),ei=(unsigned)unpack(bits,&at,5);
  uint32_t wo=26843546u+(uint32_t)((wi*7340032u+2)/5);
  int32_t e=-217706+(int32_t)((ei*1088529u+16)/32);
- uint32_t lsp[10];unsigned hz=0;
- for(unsigned j=0;j<10;j++){unsigned q=(unsigned)unpack(bits,&at,5);hz+=delta_lsp_cb[j][q];lsp[j]=(uint32_t)(((uint64_t)hz<<32)/8000);}
+ uint32_t lsp[10];
+ unsigned lsp_hz[10], indices[10], hz=0;
+ for(unsigned j=0;j<10;j++) {
+  indices[j]=(unsigned)unpack(bits,&at,5);
+  hz+=delta_lsp_cb[j][indices[j]];
+  lsp_hz[j]=hz;
+ }
+ /* Positive gaps make the final LSP the highest. Validate it before synthesis. */
+ if(hz>=4000u&&!repair_lsp(s,lsp_hz,indices)) {
+  conceal_packet(s,speech);
+  s->phase+=160u*s->wo;
+  return;
+ }
+ for(unsigned j=0;j<10;j++)lsp[j]=(uint32_t)(((uint64_t)lsp_hz[j]<<32)/8000);
  uint32_t iw=26843546;
  if(v0&&!s->voiced&&!v1)v0=0;
  if(v0)iw=s->voiced?(v1?s->wo/2+wo/2:s->wo):wo;

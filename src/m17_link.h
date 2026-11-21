@@ -16,6 +16,7 @@ typedef struct {
  uint32_t frames, bad, lost, duplicates, lsf_count;
 } m17_receiver;
 void m17_receiver_init(m17_receiver *,m17_payload_sink,void *);
+void m17_receiver_end(m17_receiver *);
 int m17_receive_frame(m17_receiver *,const int16_t symbols[192]);
 void m17_pack_phy(const int8_t symbols[192],uint8_t out[48]);
 void m17_unpack_phy(const uint8_t in[48],int16_t symbols[192]);
@@ -32,11 +33,13 @@ void m17_receive_phy_bytes(m17_symbol_stream *,const uint8_t *,unsigned);
 typedef struct { int8_t symbols[9];unsigned pos, tick; } m17_modulator;
 void m17_mod_init(m17_modulator *);
 void m17_modulate(m17_modulator *,const int8_t symbols[192],int16_t pcm[320]);
+enum { M17_FILTER_HISTORY=256 };
 typedef struct {
- int16_t samples[128], filtered[128], frame[192];
+ int16_t samples[128], filtered[M17_FILTER_HISTORY], frame[192];
  uint32_t ticks, candidate_end, best_tick, next_symbol;
  unsigned pos, frame_n;
  uint32_t best_error;
+ const int8_t *best_sync;
  bool candidate, collecting;
  m17_receiver *rx;
 } m17_demodulator;

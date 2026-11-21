@@ -302,7 +302,8 @@ static void outputs(radio_sm_t *sm)
 {
 	bool tx = sm->view.state == RS_TX;
 	bool fm = sm->view.ch.mode == RADIO_MODE_FM && !sm->hotspot;
-	bool open = !tx && fm && (sm->view.monitor || sm->view.state == RS_RX);
+	bool open = !tx && fm && (sm->view.monitor || sm->view.state == RS_RX ||
+				 (sm->view.state == RS_TX_DENIED && sm->deny_rx));
 	bool green = open;
 #if RADIO_SM_DV
 	if (sm->dv_running && !tx && sm->view.state == RS_RX) {
@@ -344,8 +345,11 @@ static void outputs(radio_sm_t *sm)
 
 static void end_reception(radio_sm_t *sm, uint32_t now_ms)
 {
-	if (sm->view.state == RS_RX) {
-		sm->view.state = RS_IDLE;
+	if (sm->view.state == RS_RX || sm->deny_rx) {
+		if (sm->view.state == RS_RX) {
+			sm->view.state = RS_IDLE;
+		}
+		sm->deny_rx = false;
 		sm->view.last_rx_ms = now_ms != 0 ? now_ms : 1;
 	}
 	sm->close_count = 0;
@@ -741,7 +745,7 @@ static bool bcl_busy(const radio_sm_t *sm)
 	if (sm->view.ch.mode != RADIO_MODE_FM || sm->set.bcl == RADIO_BCL_OFF) {
 		return false;
 	}
-	bool carrier = sm->view.state == RS_RX || carrier_heard(sm, sm->view.noise);
+	bool carrier = carrier_heard(sm, sm->view.noise);
 	if (sm->set.bcl == RADIO_BCL_CARRIER) {
 		return carrier;
 	}
@@ -800,12 +804,15 @@ static uint8_t tx_check(const radio_sm_t *sm)
 
 static void deny(radio_sm_t *sm, uint8_t reason)
 {
+	sm->deny_rx = reason == TXDENY_BUSY && sm->view.state == RS_RX && sm->view.ch.mode == RADIO_MODE_FM;
 	sm->view.state = RS_TX_DENIED;
 	sm->view.tx_deny = reason;
 	sm->view.tot_warning = false;
 	outputs(sm);
 	changed(sm);
-	beep(sm, BEEP_TX_DENY);
+	if (!sm->deny_rx) {
+		beep(sm, BEEP_TX_DENY);
+	}
 }
 
 // The TX timer in the view, and the warning tot_warn_s before the time-out (FM and DMR)
@@ -2023,13 +2030,17 @@ static void fm_tx_end(radio_sm_t *sm, bool keyed, uint32_t now_ms)
 	sm->tail_ms = 0;
 #endif
 	if (sm->view.state == RS_TX || sm->view.state == RS_TX_DENIED) {
-		sm->view.state = RS_IDLE;
+		bool rx_on = sm->view.state == RS_TX_DENIED && sm->deny_rx;
+		sm->deny_rx = false;
+		sm->view.state = rx_on ? RS_RX : RS_IDLE;
 		sm->view.tx_deny = TXDENY_NONE;
 		sm->view.tot_warning = false;
 		sm->view.tone_burst = false;
 		sm->view.roger = false;
-		sm->close_count = 0;
-		reset_tone(sm);
+		if (!rx_on) {
+			sm->close_count = 0;
+			reset_tone(sm);
+		}
 		outputs(sm);
 		changed(sm);
 	}
@@ -2154,9 +2165,10 @@ static void ptt_down(radio_sm_t *sm, uint32_t now_ms)
 		deny(sm, TXDENY_HOTSPOT);	// the host link transmits for the hotspot; PTT does nothing until it ends
 		return;
 	}
-	end_reception(sm, now_ms);
-
 	uint8_t reason = tx_check(sm);
+	if (reason != TXDENY_BUSY) {
+		end_reception(sm, now_ms);
+	}
 	if (reason != TXDENY_NONE) {
 		deny(sm, reason);
 		return;
@@ -3552,7 +3564,7 @@ void radio_sm_poll(radio_sm_t *sm, uint32_t now_ms)
 		}
 		return;
 	}
-	if (sm->view.state == RS_TX_DENIED) {
+	if (sm->view.state == RS_TX_DENIED && !sm->deny_rx) {
 		return;
 	}
 

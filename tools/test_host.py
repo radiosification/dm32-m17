@@ -5,7 +5,7 @@ from filter_taps import generate
 LIB=[M17/'m17.c',*sorted(p for p in M17.glob('*/*.c') if p.parent.name!='unit_tests')]
 def main():
  generate()
- flags=['-std=gnu11','-O2','-g','-DM17_MODEM_TEST','-I'+str(M17),'-I'+str(ROOT/'src'),'-I'+str(OUT),'-fsanitize=address,undefined','-fno-sanitize-recover=all']
+ flags=['-std=gnu11','-O2','-g','-I'+str(M17),'-I'+str(ROOT/'src'),'-I'+str(OUT),'-fsanitize=address,undefined','-fno-sanitize-recover=all']
  run(['clang',*flags,ROOT/'tests/test_link.c',ROOT/'src/m17_link.c',ROOT/'src/m17_modem.c',*LIB,'-lm','-o',OUT/'test-link'])
  run([OUT/'test-link'])
  numeric_flags=['-O2','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all','-I'+str(ROOT/'src'),'-I'+str(C2/'inc')]

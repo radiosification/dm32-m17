@@ -236,8 +236,8 @@ static void storage_section(dl_text_t *t)
 	int ref_trim = sv->ref_trim_ppb;
 	unsigned updown_home = settings_updown_home(sv), low_batt_pct = sv->low_batt_pct, auto_off_min = sv->auto_off_min;
 	unsigned privacy_type = sv->privacy_type[0], privacy_active = sv->privacy_active;
-	// bit 0 noise reduction off, bit 1 AGC on (settings_t.accent bits 6-7)
-	unsigned audio_flags = (unsigned)((sv->accent & SETTINGS_AUDIO_MASK) >> SETTINGS_AUDIO_SHIFT);
+	// Keep the debug flag layout: legacy bit 0 reports suppression off, bit 1 reports AGC.
+	unsigned audio_flags = (sv->accent & SETTINGS_AUDIO_AGC) ? 3u : 1u;
 	// The UI's language: its two code letters, "en" when none is stored (HIL tests read English text)
 	char lang[3] = { sv->lang[0], sv->lang[1], 0 };
 

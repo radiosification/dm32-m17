@@ -12,7 +12,6 @@
 #include "codeplug/codeplug.h"
 #include "m17_voice.h"
 #include "mic_audio.h"
-#include "radio/rx_limiter.h"
 #include "radio/radio.h"
 #include "radio/beep.h"
 #include "radio_dv_reasons.h"
@@ -21,7 +20,6 @@
 typedef struct {int16_t data[2048];volatile uint32_t head,tail;} ring;
 static ring m17_input,m17_output,m17_wave,m17_microphone;
 static m17_voice voice;
-static voice_rx_limiter level;
 static radio_dv_cfg_t m17_channel;
 static TaskHandle_t m17_worker;
 static volatile uint32_t m17_epoch,m17_ready,m17_worker_epoch,m17_done,m17_frames,m17_last_ms,m17_overruns,m17_underruns;
@@ -103,18 +101,17 @@ static void pull(int16_t *pcm,uint16_t n) {
   * priority radio task instead of repeatedly sending malformed frames. */
  if(available<n && !m17_done){m17_underruns++;m17_failed=true;}
 }
-static bool admitted(void) {
- unsigned type=((unsigned)voice.receiver.lsf.type[0]<<8)|voice.receiver.lsf.type[1];
- return m17_channel.hear_all||m17_channel.nac_rx==0xffff||((type>>7)&15)==m17_channel.nac_rx;
-}
 /* Called before decoding a payload as well as before queueing playback. */
-bool radio_m17_admit(const lsf_t *lsf){(void)lsf;return m17_selected&&!m17_want_tx&&m17_worker_epoch==m17_epoch&&admitted();}
+static bool radio_m17_admit(const lsf_t *lsf) {
+ unsigned type=((unsigned)lsf->type[0]<<8)|lsf->type[1];
+ return m17_selected&&!m17_want_tx&&m17_worker_epoch==m17_epoch&&
+        (m17_channel.hear_all||m17_channel.nac_rx==0xffff||((type>>7)&15)==m17_channel.nac_rx);
+}
 static void speaker(void *ctx,const int16_t pcm[160]) {
  (void)ctx;if(!radio_m17_admit(&voice.receiver.lsf))return;
- int16_t limited[160];voice_rx_limiter_process(&level,pcm,limited);
  taskENTER_CRITICAL();
  if(m17_worker_epoch!=m17_epoch){taskEXIT_CRITICAL();return;}
- if(!push(&m17_output,limited,RX_BLOCK))m17_overruns++;
+ if(!push(&m17_output,pcm,RX_BLOCK))m17_overruns++;
  m17_frames++;
  m17_last_ms=hal_millis();
  m17_rx_ended=false;
@@ -147,7 +144,8 @@ static void run(void *ctx) {
       modulate(preamble);modulate(symbols);
      }
     } else {
-     m17_voice_init(&voice,speaker,NULL);voice_rx_limiter_reset(&level);
+     m17_voice_init(&voice,speaker,NULL);
+     voice.admit=radio_m17_admit;
     }
    }
    if(seen==m17_epoch)m17_ready=seen;
@@ -183,7 +181,6 @@ static bool identity(m17_mic_audio_options *options) {
  if(options) {
   options->gain_step=settings.mic_gain;
   options->agc=(settings.accent & SETTINGS_AUDIO_AGC)!=0;
-  options->noise_reduction=(settings.accent & SETTINGS_AUDIO_NO_NOISE_REDUCTION)==0;
  }
  char name[CODEPLUG_NAME_LEN+1];codeplug_radio_name(name);
  const char *s=name[0]?name:settings.radio_name;

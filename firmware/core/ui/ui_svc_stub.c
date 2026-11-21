@@ -36,6 +36,7 @@ WEAK bool ui_svc_monitor(bool on) { (void)on; return false; }
 WEAK bool ui_svc_vox(bool on) { (void)on; return false; }
 WEAK bool ui_svc_save_channel(void) { return false; }
 WEAK bool ui_svc_write_channel(uint16_t number, const channel_t *ch) { (void)number; (void)ch; return false; }
+WEAK bool ui_svc_delete_channel(uint16_t number) { (void)number; return false; }
 WEAK bool ui_svc_zone_edit(const zone_op_t *op) { (void)op; return false; }
 WEAK void ui_svc_zone_poll(void) { }
 WEAK bool ui_svc_zone_pending(void) { return false; }
@@ -103,7 +104,6 @@ static int32_t settings[UI_SET_COUNT] = {
 	[UI_SET_MSG_FORMAT] = 2,	// ETSI IP text
 	[UI_SET_VIBRATE] = 1, [UI_SET_VOLUME] = RADIO_VOLUME_DEFAULT, [UI_SET_DUAL_DELAY_MS] = RADIO_DUAL_DELAY_MS,
 	[UI_SET_BCAST_STEP] = 200,
-	[UI_SET_NOISE_REDUCTION] = 1,
 };
 // (ui_svc_storage.c keeps the ones settings_t has fields for: these are the defaults of the rest, and the UI's
 // stand-ins in a build without the store)

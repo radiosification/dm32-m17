@@ -10,10 +10,9 @@ def install():
  for p in (C2/'inc').glob('*.h'):shutil.copyfile(p,inc/p.name)
  shutil.copyfile(M17/'m17.h',inc/'m17.h')
  filters();shutil.copyfile(OUT/'filter_taps.h',inc/'filter_taps.h')
- for name in ['m17_link.c','m17_link.h','m17_modem.c','m17_voice.c','m17_voice.h','mic_audio.c','mic_audio.h']:
-  s=(ROOT/'src'/name).read_text()
-  if name=='m17_voice.c':s=s.replace('m17_voice *v=ctx;int16_t pcm[160];(void)fn;', 'm17_voice *v=ctx;int16_t pcm[160];(void)fn;\n extern bool radio_m17_admit(const lsf_t *);if(!radio_m17_admit(&v->receiver.lsf))return;')
-  (dst/name).write_text(s)
+ for name in ['m17_link.c','m17_link.h','m17_modem.c','m17_modem_internal.h',
+              'm17_voice.c','m17_voice.h','mic_audio.c','mic_audio.h']:
+  shutil.copyfile(ROOT/'src'/name,dst/name)
  for name in ['radio_m17.c','radio_m17.h']:shutil.copyfile(ROOT/'integration'/name,FW/'core/dv'/name)
  codec=codec_sources()
  lib=[M17/'m17.c',*[p for p in M17.glob('*/*.c') if p.parent.name!='unit_tests']]

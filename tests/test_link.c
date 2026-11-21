@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-#include "m17_link.h"
+#include "m17_modem_internal.h"
 #include "filter_taps.h"
 #include <assert.h>
 #include <stdio.h>
@@ -9,8 +9,6 @@ static m17_demodulator demod;
 static m17_modulator mod;
 static unsigned heard;
 static uint8_t payload[32][16];
-#ifdef M17_MODEM_TEST
-extern uint32_t m17_test_sync_error(m17_demodulator *,const int8_t *);
 static uint32_t reference_sync(const int16_t x[8],const int8_t *pat) {
  int32_t cross=0,mean=0,ps=0;
  for(unsigned k=0;k<8;k++){cross+=x[k]*pat[k];mean+=x[k];ps+=pat[k];assert(pat[k]==3||pat[k]==-3);}
@@ -19,7 +17,6 @@ static uint32_t reference_sync(const int16_t x[8],const int8_t *pat) {
  for(unsigned k=0;k<8;k++){int32_t d=(x[k]-mean)-pat[k]*level;e+=(uint64_t)((int64_t)d*d);}
  return (uint32_t)(e*1024u/(uint32_t)(level*level));
 }
-#endif
 static void sink(void *ctx,const uint8_t p[16],uint16_t fn) {
  (void)ctx;unsigned n=fn&0x7fff;assert(n<32);assert(!memcmp(p,payload[n],16));heard++;
 }
@@ -68,18 +65,17 @@ int main(void) {
   random=random*1664525u+1013904223u;
   int16_t x=i<128?(i&1?INT16_MIN:INT16_MAX):i<256?(i==128?INT16_MAX:0):(int16_t)(random>>16);
   pos=(pos+1)&63;history[pos]=x;uint32_t tick=fir_demod.ticks;
-  int16_t previous=fir_demod.filtered[(tick-1)&127];
+  int16_t previous=fir_demod.filtered[(tick-1)&(M17_FILTER_HISTORY-1)];
   m17_demodulate(&fir_demod,&x,1);
   for(unsigned phase=0;phase<3;phase++) {
    int64_t sum=0;for(unsigned k=phase;k<161;k+=3)sum+=(int32_t)rx_taps[k]*history[(pos-k/3)&63];
    int32_t y=(int32_t)(sum/16384);if(y>32767)y=32767;if(y<-32768)y=-32768;
-   assert(fir_demod.filtered[(tick+2*phase+1)&127]==y);
-   assert(fir_demod.filtered[(tick+2*phase)&127]==(previous+y)/2);
+   assert(fir_demod.filtered[(tick+2*phase+1)&(M17_FILTER_HISTORY-1)]==y);
+   assert(fir_demod.filtered[(tick+2*phase)&(M17_FILTER_HISTORY-1)]==(previous+y)/2);
    previous=(int16_t)y;
   }
  }
  puts("PASS RX FIR bit-exact with 64-bit reference on 10000 full-scale samples");
-#ifdef M17_MODEM_TEST
  unsigned accepted=0,rejected=0;
  for(unsigned test=0;test<100000;test++)for(unsigned pattern=0;pattern<2;pattern++) {
   const int8_t *pat=pattern?str_sync_symbols:lsf_sync_symbols;int16_t x[8];fir_demod.ticks=80;
@@ -90,12 +86,11 @@ int main(void) {
    if(v>32767)v=32767;if(v<-32768)v=-32768;
    x[k]=(int16_t)v;fir_demod.filtered[10+10*k]=x[k];
   }
-  uint32_t expected=reference_sync(x,pat),actual=m17_test_sync_error(&fir_demod,pat);
+  uint32_t expected=reference_sync(x,pat),actual=m17_sync_error(&fir_demod,fir_demod.ticks,pat);
   if(expected<2048){accepted++;assert(actual==expected);}else{rejected++;assert(actual>=2048);}
  }
  assert(accepted>1000&&rejected>1000);
  puts("PASS sync decisions match original 64-bit score on 200000 clean/noisy/clipped windows");
-#endif
  lsf_t lsf;assert(set_LSF(&lsf,"M0TEST","@ALL",M17_TYPE_STREAM|M17_TYPE_VOICE,NULL)==0);
  for(unsigned n=0;n<32;n++)for(unsigned j=0;j<16;j++)payload[n][j]=(uint8_t)(n*19+j*7);
  int8_t symbols[192];int16_t s[192],pcm[320];uint8_t phy[48];

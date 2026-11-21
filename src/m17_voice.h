@@ -13,7 +13,9 @@ typedef struct {
  m17_demodulator demod;
  m17_symbol_stream symbol_stream;
  m17_speaker_sink speaker;
+ bool (*admit)(const lsf_t *); /* Optional filter before decoding. */
  void *ctx;
+ uint32_t rx_lsf_count;
  uint16_t seq;
  bool transmitting;
 } m17_voice;

@@ -2,13 +2,18 @@
 #include "m17_voice.h"
 static void voice_payload(void *ctx,const uint8_t payload[16],uint16_t fn) {
  m17_voice *v=ctx;int16_t pcm[160];(void)fn;
+ if(v->admit&&!v->admit(&v->receiver.lsf))return;
+ if(v->rx_lsf_count!=v->receiver.lsf_count) {
+  codec2_decoder_init(&v->codec.decoder);
+  v->rx_lsf_count=v->receiver.lsf_count;
+ }
  for(unsigned i=0;i<2;i++) {
   codec2_decode(&v->codec.decoder,pcm,payload+8*i);
   if(v->speaker)v->speaker(v->ctx,pcm);
  }
 }
 void m17_voice_rx_begin(m17_voice *v) {
- v->transmitting=false;memset(&v->codec,0,sizeof v->codec);
+ v->transmitting=false;v->rx_lsf_count=0;memset(&v->codec,0,sizeof v->codec);
  codec2_decoder_init(&v->codec.decoder);
  m17_receiver_init(&v->receiver,voice_payload,v);m17_demod_init(&v->demod,&v->receiver);
  m17_symbol_stream_init(&v->symbol_stream,&v->receiver);
