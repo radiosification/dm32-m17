@@ -132,6 +132,7 @@ typedef enum {
 	RREQ_POWER_OFF,		// switching off: ARS deregistration (radio_power_off_busy until done); arg 1 = canceled
 	RREQ_RELOAD,		// the settings' preferences changed: read them again (codeplug changes are noticed alone)
 	RREQ_DMR_TS,		// DMR: arg = timeslot 1 / 2 (temporary)
+	RREQ_VFO_CAN,		// M17 VFO: arg = CAN 0..15
 	RREQ_DMR_CC,		// DMR: arg = color code 0..15 (temporary)
 	RREQ_MODE,		// arg = radio_mode_t (temporary FM <-> DMR on a channel)
 	RREQ_DMR_HEAR_ALL,	// DMR: arg = 1 latch hear all, 0 off
@@ -232,6 +233,10 @@ typedef struct {
 	bool host_audio;		// this PTT is a host audio session's (USRP): its audio, not the microphone
 	uint32_t host_pushes;		// the host's audio pushes last seen, and when they last moved (the watchdog)
 	uint32_t host_push_ms;
+#if CONFIG_BEEP
+	bool key_beep_pending;
+	uint32_t key_beep_ms;
+#endif
 	bool retune_pending;		// receive settings changed during TX: retune on PTT release
 	bool retune_due;		// the reference trim changed: tune at retune_due_ms (RREQ_RETUNE)
 	uint32_t retune_due_ms;

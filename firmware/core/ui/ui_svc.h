@@ -61,6 +61,7 @@ void ui_svc_focus_target(uint32_t id, bool private_call);
 // --- On-the-fly channel changes (temporary, P7) ---
 bool ui_svc_dmr_timeslot(uint8_t ts);
 bool ui_svc_dmr_color_code(uint8_t cc);
+bool ui_svc_channel_can(uint16_t number, uint8_t can);
 bool ui_svc_mode(uint8_t mode);			// radio_mode_t: the VFO's mode (a channel's goes through Copy to VFO)
 // Copy to VFO: the channel on view into the VFO, which opens (CONFIG_VFO). Returns a radio_vfo_copy_t: VFO_COPY_OK
 // when the request went to the radio core, else why nothing changed
@@ -73,7 +74,7 @@ bool ui_svc_vox(bool on);
 bool ui_svc_save_channel(void);
 // Store a whole channel (the channel editor, ui.md 2.1) at number 1..CODEPLUG_CHANNELS_MAX, as a storage job like
 // ui_svc_save_channel. false: a write is still going on, or no codeplug storage in this build
-bool ui_svc_write_channel(uint16_t number, const channel_t *ch);
+bool ui_svc_write_channel(uint16_t number, const channel_t *ch, bool add_to_all);
 // Delete a channel and its stored zone references through a storage job.
 bool ui_svc_delete_channel(uint16_t number);
 // The zone editor (ui.md 2.2): op is queued and runs as a storage job (zone_edit_apply), in order; the radio follows
@@ -196,7 +197,9 @@ bool ui_svc_factory_reset(void);
 // Another firmware's codeplug (codeplug_foreign, docs/spec/codeplug-native.md 2): the codeplug write the UI asks for
 // is held, not made, and UI_EV_CODEPLUG_FOREIGN asks the owner. The answer: UI_CP_CANCEL drops the write; UI_CP_NEW
 // clears the old codeplug, starts a new one and makes the write; UI_CP_USE keeps the old codeplug as the radio's own,
-// erasing nothing, and drops the write (it was made on the built-in channels shown until then). Storage jobs. false:
+// then saves a pending callsign. An unreadable codeplug is replaced by the built-in set for that callsign write.
+// Other held edits made against the built-in set are dropped.
+// Storage jobs. false:
 // nothing held, or a write still going on
 enum { UI_CP_CANCEL, UI_CP_NEW, UI_CP_USE };
 bool ui_svc_codeplug_answer(uint8_t answer);

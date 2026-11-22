@@ -104,7 +104,7 @@ static void activity(radio_sm_t *sm, uint32_t now_ms)
 	sm->activity_ms = now_ms;
 }
 
-// A beep at the settings' level: mixed into the DMR voice stream when it runs, else on its own stream
+// Play at the settings' level, on the M17 audio stream when active or a dedicated beep stream.
 static void beep(radio_sm_t *sm, uint8_t b)
 {
 #if CONFIG_BEEP
@@ -113,6 +113,8 @@ static void beep(radio_sm_t *sm, uint8_t b)
 	if (board.radio != NULL && board.radio->volume != NULL && !board.radio->volume_pcm) {
 		level = radio_beep_level(level, sm->volume_sent);
 	}
+	if (b != BEEP_KEY)
+		sm->key_beep_pending = false;
 	beep_play((beep_t)b, level, shared);
 #else
 	(void)sm;
@@ -586,12 +588,12 @@ static void vfo_copy(radio_sm_t *sm, uint32_t now_ms)
 	v->mode = c->mode;
 	v->bw = c->bw;
 	v->power = sm->temp_power ? sm->view.power : c->power;
-	v->nac_rx = c->nac_rx;
-	v->nac_tx = c->nac_tx;
-	v->talkgroup = c->talkgroup;
-	if (c->mode == RADIO_MODE_DMR) {
-	} else {
-		v->rx_tone = c->rx_tone;	// a DMR channel has no tones: the VFO keeps its own for its FM mode
+	if (codeplug_mode_digital_voice(c->mode)) {
+		v->nac_rx = c->nac_rx;
+		v->nac_tx = c->nac_tx;
+		v->talkgroup = c->talkgroup;
+	} else if (c->mode == RADIO_MODE_FM) {
+		v->rx_tone = c->rx_tone;
 		v->tx_tone = c->tx_tone;
 	}
 	sm->vfo_seeded = true;
@@ -1511,6 +1513,7 @@ static bool for_selected(uint8_t type)
 {
 	switch (type) {
 	case RREQ_POWER: case RREQ_SQUELCH: case RREQ_CLEAR_TEMP: case RREQ_DMR_TARGET: case RREQ_DMR_CONTACT:
+	case RREQ_VFO_CAN:
 	case RREQ_DMR_CALL_BACK: case RREQ_DMR_TARGET_CLEAR: case RREQ_DMR_HEAR_ALL:
 		return true;
 	default:
@@ -1550,6 +1553,17 @@ static void dual_request(radio_sm_t *sm, const radio_req_t *req, uint32_t now_ms
 #endif
 
 #if CONFIG_DUAL_WATCH
+static uint32_t dual_dwell(const radio_sm_t *sm)
+{
+	uint32_t dwell = sm->set.scan_dwell_ms;
+#if CONFIG_M17
+	// Late entry can need a full six-frame LSF cycle, then audio prefill and a status poll.
+	if (sm->view.ch.mode == RADIO_MODE_M17 && dwell < 400u)
+		return 400u;
+#endif
+	return dwell < SCAN_SETTLE_MS ? SCAN_SETTLE_MS : dwell;
+}
+
 // Dual watch on one receiver, in the wait after a signal (SCAN_PH_RESUME): the receiver stays for the reply, but after
 // each dwell there it looks at the other channel for one. A signal there is shown (view.dual_busy), not played or
 // held: the receiver goes back and the wait goes on, and the watch goes there when the wait ends. A hold (a signal,
@@ -1557,9 +1571,15 @@ static void dual_request(radio_sm_t *sm, const radio_req_t *req, uint32_t now_ms
 static bool dual_wait_service(radio_sm_t *sm, const radio_status_t *st, uint32_t now_ms)
 {
 	scan_t *sc = &sm->scan;
-	uint32_t dwell = sc->cfg.dwell_ms;
+	uint32_t dwell = dual_dwell(sm);
 	sc->cfg.delay_ms = sm->set.dual_delay_ms;	// a new setting applies at once
 	if (sm->dual_peek) {
+		if (sm->view.ch.mode == RADIO_MODE_M17 && sm->view.state == RS_RX) {
+			// A decoded call takes over the watch instead of being cut off at the end of the look.
+			sm->dual_peek = false;
+			scan_poll(sc, now_ms, true, true, true);
+			return true;
+		}
 		uint32_t since = now_ms - sc->tuned_ms;
 		if (since >= SCAN_SETTLE_MS && carrier_heard(sm, st->noise)) {
 			sm->dual_peek_heard = true;
@@ -1611,6 +1631,8 @@ static void scan_service(radio_sm_t *sm, const radio_status_t *st, uint32_t now_
 		scan_publish(sm);
 		return;
 	}
+	if (sc->kind == SCAN_DUAL)
+		sc->cfg.dwell_ms = dual_dwell(sm);
 	if (sc->kind == SCAN_DUAL && dual_wait_service(sm, st, now_ms)) {
 		scan_publish(sm);
 		return;
@@ -2335,6 +2357,18 @@ static void restore_vfo(radio_sm_t *sm, const settings_t *st, uint8_t idx)
 		sm->vfo_ch.nac_rx = v.rx_tone <= max || (sm->vfo_ch.mode==RADIO_MODE_M17&&v.rx_tone==0xffff) ? v.rx_tone : sm->vfo_ch.nac_tx;
 		sm->vfo_ch.talkgroup = (v.talk & 0xFFFFFFu) > 0 && (v.talk & 0xFFFFFFu) <= 65535 ? (uint16_t)v.talk : 1;
 	}
+#if CONFIG_M17
+	uint8_t saved_tx = st->vfo_m17_tx_can[idx], saved_rx = st->vfo_m17_rx_can[idx];
+	if (saved_tx >= 1 && saved_tx <= 16) {
+		sm->vfo_ch.nac_tx = (uint16_t)(saved_tx - 1);
+		sm->vfo_ch.nac_rx = saved_rx == 17 ? 0xFFFF :
+			saved_rx >= 1 && saved_rx <= 16 ? (uint16_t)(saved_rx - 1) : sm->vfo_ch.nac_tx;
+	} else if (sm->vfo_ch.mode == RADIO_MODE_M17) {
+		// Older M17 records used the tone values for CAN. They hold no FM tones.
+		v.rx_tone = v.tx_tone = 0;
+		v.rx_tone_type = v.tx_tone_type = TONE_NONE;
+	}
+#endif
 	sm->vfo_ch.bw = v.bw == RADIO_BW_25K ? RADIO_BW_25K : RADIO_BW_12K5;
 	sm->vfo_ch.power = v.power < board.power_count ? v.power : CODEPLUG_POWER_DEFAULT;
 	sm->vfo_ch.color_code = v.cc <= 15 ? v.cc : 1;
@@ -2350,11 +2384,16 @@ static void persist_vfo(const radio_sm_t *sm, settings_t *st, uint8_t idx)
 {
 	const channel_t *v = &sm->vfo_ch;
 	uint8_t power = v->power == CODEPLUG_POWER_DEFAULT ? SETTINGS_UNSET8 : v->power;
-	// Digital modes have no analog tones: reuse their saved values for NAC/RAN, without changing the settings record.
 	bool dv = codeplug_mode_digital_voice(v->mode);
-	subtone_t rx = dv ? (subtone_t){ TONE_NONE, v->nac_rx } : v->rx_tone;
-	subtone_t tx = dv ? (subtone_t){ TONE_NONE, v->nac_tx } : v->tx_tone;
+	bool legacy_digital = dv && v->mode != RADIO_MODE_M17;
+	subtone_t rx = legacy_digital ? (subtone_t){ TONE_NONE, v->nac_rx } : v->rx_tone;
+	subtone_t tx = legacy_digital ? (subtone_t){ TONE_NONE, v->nac_tx } : v->tx_tone;
 #if CONFIG_M17
+	if (sm->vfo_seeded && v->nac_tx <= 15) {
+		st->vfo_m17_tx_can[idx] = (uint8_t)(v->nac_tx + 1);
+		st->vfo_m17_rx_can[idx] = v->nac_rx == 0xFFFF ? 17 :
+			v->nac_rx <= 15 ? (uint8_t)(v->nac_rx + 1) : st->vfo_m17_tx_can[idx];
+	}
 	uint32_t talk = dv ? v->talkgroup : sm->vfo_talk_id | (sm->vfo_talk_private ? 0x80000000u : 0);
 #endif
 #if CONFIG_DUAL_WATCH
@@ -3141,6 +3180,16 @@ void radio_sm_request(radio_sm_t *sm, const radio_req_t *req, uint32_t now_ms)
 		}
 		break;
 	}
+	case RREQ_VFO_CAN:
+		if (busy || !sm->view.vfo || sm->view.ch.mode != RADIO_MODE_M17 || req->arg < 0 || req->arg > 15) {
+			break;
+		}
+		if (sm->vfo_ch.nac_rx == sm->vfo_ch.nac_tx) {
+			sm->view.ch.nac_rx = sm->vfo_ch.nac_rx = (uint16_t)req->arg;
+		}
+		sm->view.ch.nac_tx = sm->vfo_ch.nac_tx = (uint16_t)req->arg;
+		tune(sm, now_ms);
+		break;
 	case RREQ_MODE:
 		if (busy || req->arg == sm->view.ch.mode ||
 				(sm->view.vfo ? !radio_vfo_mode_built(req->arg) : (req->arg != RADIO_MODE_FM && req->arg != RADIO_MODE_DMR)) ||
@@ -3150,7 +3199,11 @@ void radio_sm_request(radio_sm_t *sm, const radio_req_t *req, uint32_t now_ms)
 		}
 		sm->view.ch.mode = (uint8_t)req->arg;
 		if (codeplug_mode_digital_voice(sm->view.ch.mode)) {
-			sm->view.ch.nac_rx = sm->view.ch.nac_tx = req->arg == RADIO_MODE_M17 ? 0 : CODEPLUG_NAC_DEFAULT;
+			if (req->arg != RADIO_MODE_M17) {
+				sm->view.ch.nac_rx = sm->view.ch.nac_tx = CODEPLUG_NAC_DEFAULT;
+			} else if (sm->view.ch.nac_tx > 15) {
+				sm->view.ch.nac_rx = sm->view.ch.nac_tx = 0;
+			}
 			sm->view.ch.talkgroup = 1;
 			sm->view.ch.bw = RADIO_BW_12K5;
 		}
@@ -3204,9 +3257,18 @@ void radio_sm_request(radio_sm_t *sm, const radio_req_t *req, uint32_t now_ms)
 		break;
 #endif
 	case RREQ_BEEP:
-		if (req->arg != BEEP_KEY || sm->set.key_beep) {
+#if CONFIG_BEEP
+		if (req->arg == BEEP_KEY) {
+			// The UI posts the key tone before the key action. Let that action retune and
+			// replace the PCM stream before picking the stream that will play the tone.
+			if (sm->set.key_beep) {
+				sm->key_beep_pending = true;
+				sm->key_beep_ms = now_ms;
+			}
+		} else {
 			beep(sm, (uint8_t)req->arg);
 		}
+#endif
 		break;
 #if CONFIG_FM_TX_TONES
 	case RREQ_TONE_BURST:
@@ -3443,6 +3505,11 @@ void radio_sm_poll(radio_sm_t *sm, uint32_t now_ms)
 #if CONFIG_BEEP
 	bool shared = CONFIG_M17 && sm->dv_running;
 	beep_service(shared);
+	if (sm->key_beep_pending && now_ms - sm->key_beep_ms >= RADIO_POLL_MS) {
+		sm->key_beep_pending = false;
+		if (sm->set.key_beep)
+			beep(sm, BEEP_KEY);
+	}
 #endif
 #if CONFIG_APRS_RX
 	audio_mux_service(now_ms);	// the stream for a host audio session or APRS (after the beep: it may have stopped it)

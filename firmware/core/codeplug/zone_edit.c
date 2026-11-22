@@ -253,6 +253,32 @@ zone_edit_result_t zone_edit_add_new(uint16_t zone, uint16_t pos, uint16_t numbe
 	return r;
 }
 
+// Save the new channel and append it to the All channels zone, creating the zone if needed.
+zone_edit_result_t zone_edit_add_new_all(uint16_t number, const channel_t *ch)
+{
+	storage_lock();
+	uint16_t zone = 0, pos = 0, count = codeplug_zone_count();
+	zone_edit_result_t r = ZONE_EDIT_OK;
+	for (; zone < count; zone++) {
+		r = load(zone);
+		if (r != ZONE_EDIT_OK) {
+			break;
+		}
+		if (strcmp(work.name, "All channels") == 0) {
+			pos = work.count;
+			break;
+		}
+	}
+	if (r == ZONE_EDIT_OK && zone == count) {
+		r = zone_edit_new("All channels", &zone);
+	}
+	if (r == ZONE_EDIT_OK) {
+		r = zone_edit_add_new(zone, pos, number, ch);
+	}
+	storage_unlock();
+	return r;
+}
+
 zone_edit_result_t zone_edit_copy(uint16_t zone, uint16_t *index)
 {
 	storage_lock();

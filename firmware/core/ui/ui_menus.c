@@ -1649,7 +1649,7 @@ static bool ced_write(uint16_t num, bool as_new)
 	}
 #endif
 	(void)as_new;
-	return ui_svc_write_channel(num, &ced_ch);
+	return ui_svc_write_channel(num, &ced_ch, (ced_new || as_new) && ced_ch.mode == RADIO_MODE_M17);
 }
 
 static void ced_save(bool as_new)
@@ -4469,13 +4469,19 @@ static void cpf_select(uint16_t i, bool hold)
 		ui_toast(TR("Busy saving: try again"));
 		return;
 	}
+	bool save_callsign = ui_frame()->arg != 0;
 	ui_pop();	// Cancel: the pop drops the write and says so
-	if (i != UI_CP_CANCEL)
-		ui_toast(i == UI_CP_NEW ? TR("New codeplug started") : TR("Old codeplug kept: edit again"));
+	if (i == UI_CP_NEW) {
+		ui_toast(TR("New codeplug started"));
+	} else if (i == UI_CP_USE) {
+		ui_toast(save_callsign ? TR("Saving callsign") : TR("Old codeplug kept: edit again"));
+	}
 }
 
 static const char *cpf_body(void)
 {
+	if (ui_frame()->arg != 0)
+		return TR("Start new replaces channel settings. Use anyway replaces them if unreadable. Back up first.");
 	return TR("Start new replaces the radio's channel settings. Back up first.");
 }
 

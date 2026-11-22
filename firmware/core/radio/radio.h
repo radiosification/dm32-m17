@@ -11,6 +11,7 @@
 #include "config.h"
 
 void radio_req_mode(uint8_t mode);
+void radio_req_vfo_can(uint8_t can);
 
 // Conventional modes available to a VFO; trunking still needs a programmed channel.
 static inline bool radio_vfo_mode_built(int mode)

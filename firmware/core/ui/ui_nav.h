@@ -121,6 +121,7 @@ void ui_dual_reset(void);			// at ui_app_init
 bool ui_dual_start(const ui_dual_ref_t *b);	// A = the channel on view, B = b; false with a toast when it can't
 void ui_dual_stop(void);			// off, staying on the selected channel
 void ui_dual_select(uint8_t pane);		// PTT and the keys on pane 0 (A) or 1 (B)
+void ui_entry_cancel(void);
 void ui_dual_ab_key(void);			// the A/B key: the other channel (a toast when the watch is off)
 bool ui_dual_zone_step(int dir);		// the zone keys: the selected channel's zone (false: the watch is off)
 bool ui_dual_zone_home(void);			// the Home zone key: the selected channel to the first zone (same)

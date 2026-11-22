@@ -198,6 +198,11 @@ static void pane_fill(uint8_t i)
 	p->rx_hz = ch.rx_hz;
 	sbuf_t b;
 	sb_init(&b, p->detail, sizeof p->detail);
+	if (ch.mode == RADIO_MODE_M17) {
+		sb_str(&b, "CAN ");
+		sb_u32(&b, ch.nac_tx, 1);
+		return;
+	}
 	if (ch.rx_tone.type == TONE_NONE && ch.tx_tone.type == TONE_NONE) {
 		sb_str(&b, TR("No tone"));
 	} else {
@@ -312,6 +317,8 @@ static bool apply(uint8_t sel)
 			    TEXT_ALT_NEXT "Can't watch that channel" TEXT_ALT_CLOSE));
 		return false;
 	}
+	if (ui_st.entry && dual()->sel != sel)
+		ui_entry_cancel();
 	dual()->sel = sel;
 	started_ms = ui_st.now_ms;
 	return true;
@@ -325,7 +332,6 @@ static void watch_on(ui_dual_t *d)
 	d->both = ui_svc_receivers() > 1;
 	d->rx = d->last = d->back_to = UI_DUAL_NONE;
 	d->ended[0] = d->ended[1] = false;
-	d->caller[0] = 0;
 	d->calls = 0;
 	memset(snap, 0, sizeof snap);
 	memset(&d->pane, 0, sizeof d->pane);
@@ -606,7 +612,7 @@ bool ui_dual_home_key(const input_event_t *ev)
 		ui_dual_select(ev->action == ACT_NAV_RIGHT ? 1 : 0);
 		return true;
 	case ACT_CONTEXT:
-		if (!press)
+		if (!press || ui_st.entry)
 			return false;
 		ui_push(SCR_DUAL, 0);
 		return true;
@@ -734,7 +740,6 @@ static void call_ended(ui_dual_t *d, uint8_t i, uint32_t now)
 	d->last_ms = now;
 	d->ended[i] = true;
 	d->ended_ms[i] = now;
-	strcpy(d->caller, d->pane[i].caller);
 	memmove(&d->hist[1], &d->hist[0], (n - 1) * sizeof d->hist[0]);
 	d->hist[0].pane = i;
 	d->hist[0].ms = now;
@@ -999,7 +1004,10 @@ __attribute__((noinline)) bool ui_dual_tick(const radio_view_t *v, uint32_t now)
 				talk_back(d, i, now);
 		}
 		if (x->active) {
-			caller_text(caller_buf, sizeof caller_buf, x->dmr, x->src, x->src_name, x->dst, x->group);
+			if (!own && p->mode == RADIO_MODE_M17)
+				strcpy(caller_buf, v->dv.callsign[0] ? v->dv.callsign : "M17");
+			else
+				caller_text(caller_buf, sizeof caller_buf, x->dmr, x->src, x->src_name, x->dst, x->group);
 			if (strcmp(caller_buf, p->caller) != 0) {
 				strcpy(p->caller, caller_buf);
 				dirty = true;
@@ -1017,8 +1025,6 @@ __attribute__((noinline)) bool ui_dual_tick(const radio_view_t *v, uint32_t now)
 	}
 	if (heard != d->rx) {
 		d->rx = heard;
-		if (heard != UI_DUAL_NONE)
-			strcpy(d->caller, d->pane[heard].caller);
 		dirty = true;
 	}
 	talk_back_poll(d, v, now);
@@ -1066,6 +1072,19 @@ static void pane_value(sbuf_t *b, uint8_t i)
 	}
 }
 
+// Use the same caller and pane for the row and its action, even as the calls change.
+static uint8_t action_caller_pane(const ui_dual_t *d)
+{
+	return d->rx != UI_DUAL_NONE ? d->rx : d->calls ? d->hist[0].pane : UI_DUAL_NONE;
+}
+
+static const char *action_caller(const ui_dual_t *d)
+{
+	if (d->rx != UI_DUAL_NONE)
+		return d->pane[d->rx].caller;
+	return d->calls ? d->hist[0].caller : "";
+}
+
 static void actions_item(uint16_t i, ui_item_t *it)
 {
 	const ui_dual_t *d = dual();
@@ -1087,15 +1106,17 @@ static void actions_item(uint16_t i, ui_item_t *it)
 		sb_str(&b, TR("Change B"));
 		pane_value(&vb, 1);
 		break;
-	case DA_CALLER:
+	case DA_CALLER: {
+		const char *caller = action_caller(d);
 		sb_str(&b, TR("Caller"));
-		if (!d->caller[0])
+		if (!caller[0])
 			it->flags |= UI_ITEM_DIM;
 		else if (d->rx != UI_DUAL_NONE)
-			sb_str(&vb, d->caller);		// on the air now
+			sb_str(&vb, caller);
 		else
-			caller_age(&vb, d->caller, ui_st.now_ms - d->last_ms);
+			caller_age(&vb, caller, ui_st.now_ms - d->hist[0].ms);
 		break;
+	}
 	case DA_STOP:
 		sb_str(&b, d->sel ? TR("Stop, stay on B") : TR("Stop, stay on A"));
 		break;
@@ -1114,9 +1135,17 @@ static void actions_select(uint16_t i, bool hold)
 	case DA_CHANGE_B:
 		ui_push(SCR_DUAL_PICK, i == DA_CHANGE_B);
 		break;
-	case DA_CALLER:
-		ui_open_caller_actions();
+	case DA_CALLER: {
+		const ui_dual_t *d = dual();
+		uint8_t pane = action_caller_pane(d);
+		if (pane == UI_DUAL_NONE)
+			ui_toast(TR("No calls heard yet"));
+		else if (d->pane[pane].mode == RADIO_MODE_DMR)
+			ui_open_caller_actions();
+		else
+			ui_toast(action_caller(d));
 		break;
+	}
 	case DA_STOP:
 		ui_go_home();
 		ui_dual_stop();

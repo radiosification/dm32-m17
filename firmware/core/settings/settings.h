@@ -223,6 +223,10 @@ typedef struct {
 	// Zone share: the zones imported last, so the same zone sent again updates its import instead of adding a copy
 	// (docs/spec/zone-share.md 5.4); key 0 = unused, the oldest replaced first
 	settings_zs_import_t zs_import[SETTINGS_ZS_IMPORTS];
+	// Per VFO, independent of its active mode. 0 means absent in a legacy record; CAN is stored +1.
+	// RX value 17 means accept every CAN.
+	uint8_t vfo_m17_rx_can[2];
+	uint8_t vfo_m17_tx_can[2];
 } settings_t;
 
 // Pages: settings_t is stored as records of SETTINGS_PAGE_BYTES each (settings-store.md 2.1). Only the pages its size

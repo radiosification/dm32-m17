@@ -376,6 +376,7 @@ static struct {
 	uint8_t temp;
 	uint8_t power;
 	uint8_t squelch;
+	bool add_to_all;		// new M17 channel goes in All channels
 	uint8_t held;		// a write held for the foreign codeplug question: cp_jobs[held - 1], 0 none (in padding)
 	union {
 		channel_t now;		// the channel as the radio has it now (temporary changes included)
@@ -433,6 +434,7 @@ static bool cp_post(void (*fn)(void *ctx))
 	ui_event_t ev;
 	memset(&ev, 0, sizeof ev);
 	ev.kind = UI_EV_CODEPLUG_FOREIGN;
+	ev.ok = fn == name_job && job.channel == UI_NAME_RADIO;
 	job.held = (uint8_t)(i + 1u);
 	if (!ui_notify(&ev)) {
 		job.held = 0;
@@ -465,8 +467,14 @@ static void cp_answer_job(void *ctx)
 	void (*fn)(void *ctx) = cp_jobs[job.held - 1u];
 	if ((uintptr_t)ctx == UI_CP_USE) {
 		codeplug_accept(true);		// app.c stores it
-		codeplug_reload();		// the old codeplug's records shown; the write made on the built-in set dropped
-		cp_drop();
+		codeplug_reload();
+		// For an unreadable codeplug the name write materializes the built-in set.
+		if (fn == name_job && job.channel == UI_NAME_RADIO) {
+			job.held = 0;
+			fn(NULL);
+		} else {
+			cp_drop();
+		}
 	} else if (codeplug_start_new()) {
 		job.held = 0;
 		fn(NULL);
@@ -553,9 +561,22 @@ bool ui_svc_save_channel(void)
 // The channel editor's whole channel (ui.md 2.1). Writing the channel in use drops its temporary changes: the radio
 // core re-reads it (codeplug_serial), and the edited values are what the user wants now. Whether it is the channel in
 // use is decided here on the UI task: the job runs on the housekeeping task, which must not touch v
+#if CONFIG_ZONE_EDIT
+static const char *zone_edit_text(zone_edit_result_t r);
+#endif
+
 static void write_channel_job(void *ctx)
 {
 	(void)ctx;
+#if CONFIG_ZONE_EDIT
+	if (job.add_to_all && codeplug_zones_stored()) {
+		zone_edit_result_t r = zone_edit_add_new_all(job.channel, &job.now);
+		if (r != ZONE_EDIT_OK) {
+			save_failed(zone_edit_text(r));
+		}
+		return;
+	}
+#endif
 	if (!codeplug_set_channel(job.channel, &job.now)) {
 		save_failed(TRN("Couldn't write the codeplug: not saved"));
 		return;
@@ -565,7 +586,7 @@ static void write_channel_job(void *ctx)
 	}
 }
 
-bool ui_svc_write_channel(uint16_t number, const channel_t *ch)
+bool ui_svc_write_channel(uint16_t number, const channel_t *ch, bool add_to_all)
 {
 	if (number == 0 || number > CODEPLUG_CHANNELS_MAX || job_busy()) {
 		return false;
@@ -574,7 +595,36 @@ bool ui_svc_write_channel(uint16_t number, const channel_t *ch)
 	job.channel = number;
 	job.temp = !v.vfo && v.channel_number == number && v.temporary;	// here: drop the temporary changes after it
 	job.now = *ch;
+	job.add_to_all = add_to_all;
 	return cp_post(write_channel_job);
+}
+
+static void channel_can_job(void *ctx)
+{
+	(void)ctx;
+	storage_lock();
+	bool ok = codeplug_source() == CODEPLUG_OPENFW && codeplug_channel(job.channel, &job_ch) &&
+		  job_ch.mode == RADIO_MODE_M17;
+	if (ok && job_ch.nac_tx != job.id) {
+		if (job_ch.nac_rx == job_ch.nac_tx)
+			job_ch.nac_rx = (uint16_t)job.id;
+		job_ch.nac_tx = (uint16_t)job.id;
+		ok = codeplug_set_channel(job.channel, &job_ch);
+	}
+	storage_unlock();
+	if (!ok)
+		save_failed(TRN("Couldn't write the codeplug: not saved"));
+}
+
+bool ui_svc_channel_can(uint16_t number, uint8_t can)
+{
+	if (number == 0 || number > CODEPLUG_CHANNELS_MAX || can > 15 || job_busy() ||
+	    codeplug_source() != CODEPLUG_OPENFW) {
+		return false;
+	}
+	job.channel = number;
+	job.id = can;
+	return storage_job_post(channel_can_job, NULL);
 }
 
 static void delete_channel_job(void *ctx)

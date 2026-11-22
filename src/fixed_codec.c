@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* Codec2 3200 integer decoder, derived from the pinned M17 Codec2-mod path.
+/* Codec2 3200 integer encoder and decoder, derived from the pinned M17 Codec2-mod path.
  * LSP/pitch use turns in Q32, LPC coefficients Q22, amplitudes/PCM Q8,
  * unit phasors Q15 and log2 powers Q16. Envelope powers share a per-frame
  * scale to preserve formant peaks without per-operation soft floats. */
@@ -463,6 +463,8 @@ static unsigned lpc_analyze(const int32_t windowed[320],uint32_t lsps[10]) {
 void m17_fixed_encoder_init(void *state) {
  fixed_encoder *s=state;memset(s,0,sizeof *s);for(unsigned i=0;i<320;i++)s->speech[i]=1;s->previous_bin=16;
 }
+#include "octave_check.h"
+
 static unsigned analyze_voicing(fixed_encoder *s,int *voiced)
 {
  int32_t *windowed=s->windowed,*input=s->input,*re=s->re,*im=s->im;
@@ -478,6 +480,16 @@ static unsigned analyze_voicing(fixed_encoder *s,int *voiced)
  for(unsigned j=1;j<256;j++){re[512-j]=re[j];im[512-j]=-im[j];power[512-j]=power[j];}
  unsigned period=refine_pitch(power,initial);
  *voiced=voicing(re,im,power,period);
+ if (*voiced && initial <= SAMP_RATE * 256 / 160 &&
+     period <= SAMP_RATE * 256 / 145) {
+  /* The FFT has consumed input. Reuse it for the octave check. */
+  const unsigned lower = octave_lower_period(s->speech, initial, input);
+  if (lower) {
+   const unsigned candidate = refine_pitch(power, lower);
+   if (voicing(re, im, power, candidate))
+    period = candidate;
+  }
+ }
  return period;
 }
 

@@ -209,6 +209,7 @@ void radio_req_channel_step(int8_t dir) { post(RREQ_CH_STEP, dir, 0); }
 void radio_req_zone_pos(uint16_t pos) { post(RREQ_ZONE_POS, pos, 0); }
 void radio_req_zone(uint16_t index) { post(RREQ_ZONE, index, 0); }
 void radio_req_mode(uint8_t mode) { post(RREQ_MODE, mode, 0); }
+void radio_req_vfo_can(uint8_t can) { post(RREQ_VFO_CAN, can, 0); }
 void radio_req_vfo(bool on) { post(RREQ_VFO, on, 0); }
 void radio_req_vfo_step(int8_t dir) { post(RREQ_VFO_STEP, dir, 0); }
 void radio_req_vfo_copy(void) { post(RREQ_VFO_COPY, 0, 0); }

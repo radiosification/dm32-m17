@@ -49,6 +49,7 @@ zone_edit_result_t zone_edit_move(uint16_t zone, uint16_t pos, int dir);
 // Write ch at channel number (a free one, codeplug_free_channel) and insert it at pos in the zone. Checked before
 // anything is written, so a refusal leaves no channel behind
 zone_edit_result_t zone_edit_add_new(uint16_t zone, uint16_t pos, uint16_t number, const channel_t *ch);
+zone_edit_result_t zone_edit_add_new_all(uint16_t number, const channel_t *ch);
 // A new zone with the same channels, named zone_copy_name of it. *index: where it landed
 zone_edit_result_t zone_edit_copy(uint16_t zone, uint16_t *index);
 zone_edit_result_t zone_edit_rename(uint16_t zone, const char *name);

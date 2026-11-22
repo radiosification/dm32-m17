@@ -91,7 +91,7 @@ bool ui_has_action(uint8_t action)
 	return false;
 }
 
-static void entry_cancel(void)
+void ui_entry_cancel(void)
 {
 	ui_st.entry = false;
 	ui_st.entry_len = 0;
@@ -105,7 +105,7 @@ static void set_locked(bool locked)
 	ui_st.locked = locked;
 	if (locked) {
 		ui_st.quick_edit = false;
-		entry_cancel();
+		ui_entry_cancel();
 	}
 	ui_svc_ptt_block(locked && !ui_st.ptt_locked);
 	ui_svc_dtmf_block(locked);
@@ -189,7 +189,7 @@ void ui_go_home(void)
 	cp_question_gone(1);
 	sp = 0;
 	ui_st.quick_edit = false;
-	entry_cancel();
+	ui_entry_cancel();
 	update_focus_target();
 	dirty = true;
 }
@@ -560,7 +560,7 @@ static void handle_event(const ui_event_t *ev)
 	case UI_EV_CODEPLUG_FOREIGN:
 		ui_st.toast = NULL;	// the screen that asked may have said "Saved": the question says what happens
 		if (stack[sp].scr != SCR_CP_FOREIGN)
-			ui_push(SCR_CP_FOREIGN, 0);
+			ui_push(SCR_CP_FOREIGN, ev->ok);
 		wake_req = true;
 		break;
 	case UI_EV_CALL_ALERT_RESULT:
@@ -714,7 +714,7 @@ static void entry_commit(void)
 	uint32_t hz = ui_freq_entry_hz(ui_st.entry_digits, ui_st.entry_len);
 	if (hz != 0) {
 		radio_req_vfo_set(hz);
-		entry_cancel();
+		ui_entry_cancel();
 	}
 }
 
@@ -894,7 +894,7 @@ bool ui_home_key(const input_event_t *ev)
 	int d = digit_of(ev);
 	if (is_nav(ev)) {
 		if (ui_st.entry)
-			entry_cancel();
+			ui_entry_cancel();
 		// Settings > Keys > Up/Down on Home: the channel (default), the zone, or the talk target (DMR channels). The
 		// arrow keys only: the channel knob always steps the channel, so the two can do different jobs (#25)
 		bool arrows = ev->action != ACT_ENC_STEP;
@@ -955,7 +955,7 @@ bool ui_home_key(const input_event_t *ev)
 		if (ui_st.entry) {
 			entry_last = now;
 			if (--ui_st.entry_len == 0)
-				entry_cancel();
+				ui_entry_cancel();
 			else
 				ui_st.entry_digits[ui_st.entry_len] = 0;
 		} else if (ui_st.banner.kind != UI_BANNER_NONE) {
@@ -1015,7 +1015,7 @@ void ui_quick_enter(void)
 {
 	ui_st.quick_focus = 0;
 	ui_st.quick_edit = false;
-	entry_cancel();
+	ui_entry_cancel();
 }
 
 // The usual repeater offsets of rx's band, most common first (ARRL, IARU Region 1, RSGB, WIA and NZART band plans):
@@ -1062,7 +1062,7 @@ static void split_step(int8_t dir)
 			break;
 		}
 	}
-	entry_cancel();
+	ui_entry_cancel();
 }
 
 static bool split_commit(void)
@@ -1077,7 +1077,7 @@ static bool split_commit(void)
 		return false;
 	}
 	radio_req_vfo_tx(hz);
-	entry_cancel();
+	ui_entry_cancel();
 	return true;
 }
 
@@ -1098,6 +1098,11 @@ static void quick_change(uint8_t kind, int8_t dir)
 	case QT_SPLIT:
 		split_step(dir);
 		break;
+	case QT_CAN:
+		ui_st.can_digits = 0;
+		if (ui_st.cc_edit > 15)
+			ui_st.cc_edit = (uint8_t)view->ch.nac_tx;
+		/* fall through */
 	case QT_CC: {
 		int c = ui_st.cc_edit + dir;
 		ui_st.cc_edit = (uint8_t)(c < 0 ? 15 : c > 15 ? 0 : c);
@@ -1119,6 +1124,18 @@ static void quick_close_editor(void)
 	uint8_t kind = ui_quick_kind(ui_st.quick_focus, view);
 	if (kind == QT_SPLIT && ui_st.quick_edit && !split_commit())
 		return;		// the editor stays open on what was typed
+	if (kind == QT_CAN && ui_st.quick_edit) {
+		if (ui_st.cc_edit > 15) {
+			ui_toast(TR("CAN must be 0-15"));
+			return;
+		}
+		if (view->vfo) {
+			radio_req_vfo_can(ui_st.cc_edit);
+		} else if (!ui_svc_channel_can(view->channel_number, ui_st.cc_edit)) {
+			ui_toast(TR("Couldn't save: try again"));
+			return;
+		}
+	}
 	if (kind == QT_CC && ui_st.quick_edit && !ui_svc_dmr_color_code(ui_st.cc_edit))
 		ui_toast(TR("Color code: not in this build"));
 	if (kind == QT_BRIGHTNESS)
@@ -1158,6 +1175,11 @@ static void quick_activate(int tile)
 		ui_toast(wide ? TR("Bandwidth 25 kHz") : TR("Bandwidth 12.5 kHz"));
 		break;
 	}
+	case QT_CAN:
+		ui_st.cc_edit = (uint8_t)view->ch.nac_tx;
+		ui_st.can_digits = 0;
+		ui_st.quick_edit = true;
+		break;
 	case QT_TONE: {
 		bool same = view->ch.tx_tone.type == view->ch.rx_tone.type &&
 			(view->ch.tx_tone.type == TONE_NONE || view->ch.tx_tone.value == view->ch.rx_tone.value);
@@ -1171,7 +1193,7 @@ static void quick_activate(int tile)
 		copy_to_vfo();
 		break;
 	case QT_SPLIT:
-		entry_cancel();
+		ui_entry_cancel();
 		ui_st.quick_edit = true;	// the hint row says what Up / Down and the digits do
 		break;
 	case QT_MODE: {
@@ -1255,6 +1277,15 @@ bool ui_quick_key(const input_event_t *ev)
 				ui_toast(TR("All digits typed: OK sets TX"));
 			else
 				(void)ui_freq_entry_digit(ui_st.entry_digits, &ui_st.entry_len, (char)('0' + d));
+		} else if (ui_st.quick_edit && kind == QT_CAN) {
+			if (ui_st.can_digits < 2) {
+				ui_st.cc_edit = (uint8_t)(ui_st.can_digits == 0 ? d : 10 * ui_st.cc_edit + d);
+				ui_st.can_digits++;
+			} else {
+				ui_st.cc_edit = UINT8_MAX;
+			}
+			if (ui_st.cc_edit > 15)
+				ui_toast(TR("CAN must be 0-15"));
 		} else if (ui_st.quick_edit && kind == QT_CC) {
 			int c = ui_st.cc_edit * 10 + d;
 			ui_st.cc_edit = (uint8_t)(ui_st.cc_edit < 2 && c <= 15 && ui_st.cc_edit != 0 ? c : d);
@@ -1301,6 +1332,9 @@ bool ui_quick_key(const input_event_t *ev)
 		// takes back the TX digits typed
 		if (press && ui_st.quick_edit && kind == QT_SPLIT && ui_st.entry_len > 0) {
 			ui_st.entry_digits[--ui_st.entry_len] = 0;
+			dirty = true;
+		} else if (press && ui_st.quick_edit && kind == QT_CAN) {
+			ui_st.quick_edit = false;
 			dirty = true;
 		} else if (press) {
 			if (ui_st.quick_edit)
@@ -1994,7 +2028,7 @@ bool ui_app_tick(const radio_view_t *v, uint32_t now_ms)
 		dirty = true;
 	}
 	if (ui_st.entry && (now - entry_last >= ENTRY_TIMEOUT_MS || !view->vfo))
-		entry_cancel();
+		ui_entry_cancel();
 	uint16_t unread = ui_svc_msg_unread();
 	if (unread != ui_st.unread) {
 		ui_st.unread = unread;

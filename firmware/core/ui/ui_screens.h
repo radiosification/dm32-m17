@@ -71,7 +71,6 @@ typedef struct {
 	uint32_t last_ms;	// when that call ended
 	bool ended[2];		// a call has ended on pane i since the watch started (or its channel last changed)
 	uint32_t ended_ms[2];	// ... when the last one there ended: each pane says how long ago
-	char caller[48];	// the current or last caller: "Joe Smith TG 91", "FM signal"
 	uint8_t calls;		// calls in hist[]
 	struct {
 		uint8_t pane;
@@ -100,7 +99,8 @@ typedef struct {
 	uint8_t brightness;		// backlight percent chosen in quick settings
 	uint8_t tone_target;		// Tone editor: RADIO_TONE_BOTH, RADIO_TONE_TX or RADIO_TONE_RX
 	subtone_t tone_edit;		// Tone editor: the value picked (shown at once, before the radio's view catches up)
-	uint8_t cc_edit;		// Color code editor: the value picked
+	uint8_t cc_edit;		// Selected color code or CAN
+	uint8_t can_digits;		// Number of keypad digits in the current CAN edit
 	uint8_t diag_first;	// first board line on the diagnostics page
 	bool locked;		// keys locked (long QUICK)
 	bool scanning;
@@ -130,7 +130,7 @@ typedef struct {
 // Quick settings tiles. The position of each depends on the mode (information-architecture.md 5): ui_quick_kind()
 enum {
 	QT_POWER, QT_SQUELCH, QT_TONE, QT_MODE, QT_MONITOR, QT_VOX, QT_SCAN, QT_BANDWIDTH, QT_BRIGHTNESS,
-	QT_TIMESLOT, QT_CC, QT_HEAR_ALL, QT_PRIVACY, QT_TALK_TO,
+	QT_TIMESLOT, QT_CC, QT_CAN, QT_HEAR_ALL, QT_PRIVACY, QT_TALK_TO,
 	QT_TO_VFO,		// on a channel, in place of QT_MODE: copy the channel to the VFO
 	QT_SPLIT,		// in the VFO, in place of QT_MONITOR (FM) / QT_PRIVACY (DMR): the TX frequency or offset
 
