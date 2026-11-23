@@ -14,12 +14,15 @@
 #include "mic_audio.h"
 #include "radio/radio.h"
 #include "radio/beep.h"
+#include "radio/rx_limiter.h"
 #include "radio_dv_reasons.h"
 #include <string.h>
 
 typedef struct {int16_t data[2048];volatile uint32_t head,tail;} ring;
 static ring m17_input,m17_output,m17_wave,m17_microphone;
 static m17_voice voice;
+static voice_rx_limiter rx_level;
+static uint32_t rx_level_call;
 static radio_dv_cfg_t m17_channel;
 static TaskHandle_t m17_worker;
 static volatile uint32_t m17_epoch,m17_ready,m17_worker_epoch,m17_done,m17_frames,m17_last_ms,m17_overruns,m17_underruns;
@@ -34,8 +37,9 @@ static uint32_t m17_drain_at,m17_calls;
 static uint8_t m17_last_reason;
 static m17_mic_audio mic_dsp;
 static m17_mic_audio_options mic_options;
-static char m17_source[10],m17_received_source[10],m17_received_destination[10];
-static uint8_t m17_received_can;
+static char m17_source[10],m17_received_caller[10],m17_received_destination[10];
+static uint32_t m17_display_lsf_count;
+static uint8_t m17_seen_can;
 static volatile uint32_t m17_seen,m17_seen_ms,m17_rx_max_us,m17_tx_max_us;
 static unsigned size(ring *r){return r->head-r->tail;}
 static void clear(ring *r){r->head=r->tail=0;}
@@ -109,15 +113,39 @@ static bool radio_m17_admit(const lsf_t *lsf) {
 }
 static void speaker(void *ctx,const int16_t pcm[160]) {
  (void)ctx;if(!radio_m17_admit(&voice.receiver.lsf))return;
+ if(rx_level_call!=voice.receiver.lsf_count) {
+  rx_level_call=voice.receiver.lsf_count;
+  voice_rx_limiter_reset(&rx_level);
+ }
+ int16_t levelled[RX_BLOCK];
+ voice_rx_limiter_process(&rx_level,pcm,levelled,voice.rx_voiced);
  taskENTER_CRITICAL();
  if(m17_worker_epoch!=m17_epoch){taskEXIT_CRITICAL();return;}
- if(!push(&m17_output,pcm,RX_BLOCK))m17_overruns++;
+ if(!push(&m17_output,levelled,RX_BLOCK))m17_overruns++;
  m17_frames++;
  m17_last_ms=hal_millis();
  m17_rx_ended=false;
- decode_callsign_bytes(m17_received_source,voice.receiver.lsf.src);
- decode_callsign_bytes(m17_received_destination,voice.receiver.lsf.dst);
- m17_received_can=(((unsigned)voice.receiver.lsf.type[0]<<8)|voice.receiver.lsf.type[1])>>7&15;
+ taskEXIT_CRITICAL();
+}
+static void publish_rx_identity(uint32_t epoch) {
+ const m17_receiver *receiver=&voice.receiver;
+ taskENTER_CRITICAL();
+ if(epoch==m17_epoch) {
+  if(m17_seen!=receiver->frames) {
+   m17_seen=receiver->frames;
+   m17_seen_ms=hal_millis();
+   m17_seen_can=(((unsigned)receiver->lsf.type[0]<<8)|receiver->lsf.type[1])>>7&15;
+   /* Signal activity covers all CANs. Last Heard follows admitted voice. */
+   if(m17_display_lsf_count!=receiver->lsf_count && radio_m17_admit(&receiver->lsf)) {
+    m17_display_lsf_count=receiver->lsf_count;
+    memset(m17_received_destination,0,sizeof m17_received_destination);
+    decode_callsign_bytes(m17_received_destination,receiver->lsf.dst);
+   }
+  }
+  /* A valid LICH update can accompany a rejected voice payload. */
+  if(m17_display_lsf_count==receiver->lsf_count)
+   memcpy(m17_received_caller,receiver->caller,sizeof m17_received_caller);
+ }
  taskEXIT_CRITICAL();
 }
 static void modulate(const int8_t s[192]) {
@@ -146,6 +174,7 @@ static void run(void *ctx) {
     } else {
      m17_voice_init(&voice,speaker,NULL);
      voice.admit=radio_m17_admit;
+     rx_level_call=0;
     }
    }
    if(seen==m17_epoch)m17_ready=seen;
@@ -168,8 +197,7 @@ static void run(void *ctx) {
     if(n){uint32_t began=hal_micros();m17_voice_rx_pcm(&voice,pcm,n);
      if(seen==m17_epoch)m17_rx_ended=voice.receiver.ended;
      uint32_t elapsed=hal_micros()-began;if(elapsed>m17_rx_max_us)m17_rx_max_us=elapsed;
-     if(m17_seen!=voice.receiver.frames){m17_seen=voice.receiver.frames;m17_seen_ms=hal_millis();
-      taskENTER_CRITICAL();decode_callsign_bytes(m17_received_source,voice.receiver.lsf.src);decode_callsign_bytes(m17_received_destination,voice.receiver.lsf.dst);m17_received_can=(((unsigned)voice.receiver.lsf.type[0]<<8)|voice.receiver.lsf.type[1])>>7&15;taskEXIT_CRITICAL();}
+     publish_rx_identity(seen);
     }
    }
   }
@@ -189,7 +217,7 @@ static bool identity(m17_mic_audio_options *options) {
 }
 static void reset(bool tx) {
  taskENTER_CRITICAL();clear(&m17_input);clear(&m17_output);clear(&m17_wave);clear(&m17_microphone);
- memset(m17_received_source,0,10);memset(m17_received_destination,0,10);m17_received_can=0;
+ memset(m17_received_caller,0,10);memset(m17_received_destination,0,10);m17_seen_can=0;m17_display_lsf_count=0;
  m17_ready=m17_done=0;m17_seen=m17_seen_ms=m17_last_ms=0;m17_want_tx=tx;m17_rx_ended=false;m17_failed=false;m17_epoch++;taskEXIT_CRITICAL();
 }
 static void rx(void) {
@@ -247,9 +275,9 @@ void radio_m17_service(uint32_t now) {
 }
 void radio_m17_status(radio_dv_status_t *s,uint32_t now) {
  s->active=m17_selected;s->fault=m17_failed;s->transmitting=m17_want_tx;s->keyed=m17_keyed;s->tx_calls=m17_calls;
- s->sync=m17_seen_ms&&now-m17_seen_ms<400;s->sync_ours=s->sync&&(m17_channel.hear_all||m17_channel.nac_rx==0xffff||m17_channel.nac_rx==m17_received_can);s->playing=m17_last_ms&&now-m17_last_ms<80&&m17_audio_on;
- taskENTER_CRITICAL();memcpy(s->callsign,m17_want_tx?m17_source:m17_received_source,10);memcpy(s->destination,m17_want_tx?"@ALL\0\0\0\0\0":m17_received_destination,10);taskEXIT_CRITICAL();
- s->nac=m17_received_can;s->tx_reason=m17_last_reason;s->tx_blocks=m17_frames;
+ s->sync=m17_seen_ms&&now-m17_seen_ms<400;s->sync_ours=s->sync&&(m17_channel.hear_all||m17_channel.nac_rx==0xffff||m17_channel.nac_rx==m17_seen_can);s->playing=m17_last_ms&&now-m17_last_ms<80&&m17_audio_on;
+ taskENTER_CRITICAL();memcpy(s->callsign,m17_want_tx?m17_source:m17_received_caller,10);memcpy(s->destination,m17_want_tx?"@ALL\0\0\0\0\0":m17_received_destination,10);taskEXIT_CRITICAL();
+ s->nac=m17_seen_can;s->tx_reason=m17_last_reason;s->tx_blocks=m17_frames;
 }
 void radio_m17_counters(uint32_t v[6]){taskENTER_CRITICAL();v[0]=m17_frames;v[1]=m17_overruns;v[2]=m17_underruns;v[3]=m17_rx_max_us;v[4]=m17_tx_max_us;v[5]=m17_epoch;taskEXIT_CRITICAL();}
 

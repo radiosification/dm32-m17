@@ -6,7 +6,8 @@
 enum { M17_PCM_SAMPLES=320, M17_FRAME_SYMBOLS=192 };
 typedef void (*m17_payload_sink)(void *, const uint8_t payload[16], uint16_t fn);
 typedef struct {
- lsf_t lsf, partial;
+ lsf_t lsf, partial; /* Call setup with raw SRC/DST, and the LICH assembly. */
+ char caller[10], reflector[10]; /* Display caller and optional META reflector. */
  viterbi_ctx_t fec;
  m17_payload_sink sink;
  void *ctx;

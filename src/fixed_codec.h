@@ -1,8 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #pragma once
+#include <stdbool.h>
 #include <stdint.h>
 void m17_fixed_decoder_init(void *);
-void m17_fixed_decode(void *,int16_t *,const uint8_t *);
+/* Returns true if either decoded half contains voiced speech. */
+bool m17_fixed_decode(void *,int16_t *,const uint8_t *);
 void m17_fixed_encoder_init(void *);
 void m17_fixed_encode(void *,uint8_t *,const int16_t *);
 /* Integer FFT bridges. Values retain their input binary point. */

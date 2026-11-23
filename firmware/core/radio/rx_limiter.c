@@ -1,84 +1,111 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "rx_limiter.h"
-#include <string.h>
 
-static uint32_t magnitude(int32_t x) { return (uint32_t)(x<0?-x:x); }
-static uint32_t clamp(uint32_t x,uint32_t lo,uint32_t hi)
-{ return x<lo?lo:x>hi?hi:x; }
-static uint32_t sqrt_ceiling(uint32_t n)
+enum {
+    SAMPLES = 160,
+    UNITY = 1 << 15,
+    MIN_GAIN = UNITY / 2,
+    MAX_GAIN = UNITY * 4,
+    TARGET_RMS = 2200,
+    MIN_SPEECH_RMS = 96,
+    LOUD_SPEECH_RMS = 2800,
+    SPEECH_HOLD_BLOCKS = 6,
+    RMS_AVERAGING_BLOCKS = 36,
+    LOUD_RMS_AVERAGING_BLOCKS = 4,
+    ATTENUATION_BLOCKS = 60,
+    LOUD_CUT_BLOCKS = 2,
+    BOOST_BLOCKS = 10,
+};
+
+static unsigned sqrt_floor(unsigned n)
 {
-    uint32_t original=n,root=0,bit=1u<<30;
-    while(bit>n)bit>>=2;
-    while(bit) {
-        if(n>=root+bit){n-=root+bit;root=(root>>1)+bit;}
-        else root>>=1;
-        bit>>=2;
+    unsigned root = 0;
+    for (unsigned bit = 1u << 30; bit; bit >>= 2) {
+        if (n >= root + bit) {
+            n -= root + bit;
+            root = (root >> 1) + bit;
+        } else {
+            root >>= 1;
+        }
     }
-    return root*root<original?root+1:root;
+    return root;
 }
+
 void voice_rx_limiter_reset(voice_rx_limiter *s)
 {
-    memset(s,0,sizeof *s);
-    s->gain_q15=32768;s->reference_peak=4096;s->reference_rms=1024;
-    s->agc_gain_q15=32768;
+    *s = (voice_rx_limiter){.gain_q15 = UNITY, .output_gain_q15 = UNITY};
 }
-void voice_rx_limiter_process(voice_rx_limiter *s,const int16_t in[160],int16_t out[160])
+
+void voice_rx_limiter_process(voice_rx_limiter *s, const int16_t in[SAMPLES],
+                              int16_t out[SAMPLES], bool voiced)
 {
-    uint64_t energy=0;uint32_t peak=0;
-    for(unsigned i=0;i<160;i++) {
-        uint32_t a=magnitude(in[i]);
-        if(a>peak)peak=a;
-        energy+=(uint64_t)a*a;
+    uint64_t energy = 0;
+    int32_t peak = 0;
+    for (unsigned i = 0; i < SAMPLES; i++) {
+        int32_t sample = in[i];
+        int32_t magnitude = sample < 0 ? -sample : sample;
+        if (magnitude > peak)
+            peak = magnitude;
+        energy += (uint32_t)(sample * sample);
     }
-    /* Round UP, so RMS rounding cannot permit an overshoot. */
-    uint32_t rms=sqrt_ceiling((uint32_t)((energy+159)/160));
-    uint32_t peak_limit=clamp(2*s->reference_peak,VOICE_RX_PEAK_MIN,VOICE_RX_PEAK_MAX);
-    uint32_t rms_limit=clamp(2*s->reference_rms,VOICE_RX_RMS_MIN,VOICE_RX_RMS_MAX);
-    uint32_t wanted=32768;
-    if(peak>peak_limit)wanted=peak_limit*32768u/peak;
-    if(rms>rms_limit) {
-        uint32_t gain=rms_limit*32768u/rms;
-        if(gain<wanted)wanted=gain;
+    const int32_t rms = sqrt_floor(energy / SAMPLES);
+
+    /* Learn on voiced Codec2 blocks only. The boost closes over 99% of
+     * a steady gain step in 1 s of voiced audio. Attenuation has a
+     * time constant of about 1.2 s. */
+    if (voiced && rms >= MIN_SPEECH_RMS) {
+        s->speech_hold = SPEECH_HOLD_BLOCKS;
+        if (!s->speech_rms_q8)
+            s->speech_rms_q8 = rms * 256;
+        /* Drop inherited boost quickly when a clearly loud voiced block
+         * arrives. Let the speech estimate catch up on the same blocks. */
+        const bool cut_boost = rms >= LOUD_SPEECH_RMS && s->gain_q15 > UNITY;
+        const int32_t average_blocks = cut_boost ? LOUD_RMS_AVERAGING_BLOCKS : RMS_AVERAGING_BLOCKS;
+        s->speech_rms_q8 += (rms * 256 - s->speech_rms_q8) / average_blocks;
+        int32_t desired = TARGET_RMS * UNITY / (s->speech_rms_q8 / 256);
+        if (desired < MIN_GAIN)
+            desired = MIN_GAIN;
+        if (desired > MAX_GAIN)
+            desired = MAX_GAIN;
+        if (cut_boost && desired > UNITY)
+            desired = UNITY;
+        const int32_t delta = desired - s->gain_q15;
+        const int32_t gain_blocks = cut_boost ? LOUD_CUT_BLOCKS
+                                             : (delta < 0 ? ATTENUATION_BLOCKS : BOOST_BLOCKS);
+        s->gain_q15 += delta / gain_blocks;
+    } else if (s->speech_hold) {
+        s->speech_hold--;
     }
-    /* Immediate block attack; at most 1/32 unity per 20 ms on release.
-     * One common gain preserves the waveform instead of hard-clipping it.
-     * An arbitrarily long bad tail cannot raise its own ceiling: only
-     * unbounded-by-the-limiter, non-silent input updates the reference.
-     */
-    if(wanted<s->gain_q15)s->gain_q15=wanted;
-    else {
-        uint32_t release=wanted-s->gain_q15;
-        s->gain_q15+=release>1024?1024:release;
+
+    /* Preserve short unvoiced consonants. Taper positive gain away for
+     * low-level blocks and pauses without changing the learned gain. */
+    int32_t gain = s->gain_q15;
+    if (gain > UNITY) {
+        int32_t floor = s->speech_rms_q8 / (6 * 256);
+        if (floor < MIN_SPEECH_RMS)
+            floor = MIN_SPEECH_RMS;
+        int32_t above_floor = rms - floor;
+        if (!s->speech_hold || above_floor <= 0)
+            gain = UNITY;
+        else if (above_floor < 2 * floor)
+            gain = UNITY + (gain - UNITY) * above_floor / (2 * floor);
     }
-    /* Learn ONLY from ordinary, non-silent RAW decoder output. AGC never
-     * observes its own limited output (which would cause gain pumping).
-     * A burst or pause freezes both the AGC gain and level reference.
-     */
-    if(wanted==32768 && rms>=64 && peak>=256 &&
-       rms<=2*s->reference_rms && peak<=2*s->reference_peak) {
-        s->reference_peak=(uint32_t)((int32_t)s->reference_peak+((int32_t)peak-(int32_t)s->reference_peak)/16);
-        s->reference_rms=(uint32_t)((int32_t)s->reference_rms+((int32_t)rms-(int32_t)s->reference_rms)/16);
-        uint32_t desired=clamp(VOICE_RX_AGC_TARGET*32768u/s->reference_rms,8192,VOICE_RX_AGC_MAX_Q15);
-        int32_t delta=(int32_t)desired-(int32_t)s->agc_gain_q15;
-        s->agc_gain_q15=(uint32_t)((int32_t)s->agc_gain_q15+delta/(delta<0?4:32));
+
+    /* Bound the interpolated gain by the block's headroom. Keep the
+     * speaker PCM waveform and leave the decoder's peak control in place. */
+    int32_t start = s->output_gain_q15;
+    if (peak) {
+        const int32_t safe_gain = INT16_MAX * UNITY / peak;
+        if (start > safe_gain)
+            start = safe_gain;
+        if (gain > safe_gain)
+            gain = safe_gain;
     }
-    uint32_t gain=(uint32_t)((uint64_t)s->gain_q15*s->agc_gain_q15/32768);
-    /* Translate the trusted RAW level into an OUTPUT ceiling using AGC,
-     * then apply the absolute floors/caps. Applying the floor before boost
-     * would allow very quiet voice's noise bursts to grow by the boost too.
-     */
-    uint32_t output_peak_limit=clamp((uint32_t)((uint64_t)2*s->reference_peak*s->agc_gain_q15/32768),
-                                     VOICE_RX_PEAK_MIN,VOICE_RX_PEAK_MAX);
-    uint32_t output_rms_limit=clamp((uint32_t)((uint64_t)2*s->reference_rms*s->agc_gain_q15/32768),
-                                    VOICE_RX_RMS_MIN,VOICE_RX_RMS_MAX);
-    if(peak && gain>output_peak_limit*32768u/peak)gain=output_peak_limit*32768u/peak;
-    if(rms && gain>output_rms_limit*32768u/rms)gain=output_rms_limit*32768u/rms;
-    if(gain<s->agc_gain_q15)s->limited_frames++;
-    if(peak>s->input_peak)s->input_peak=peak;
-    for(unsigned i=0;i<160;i++) {
-        int32_t sample=(int32_t)((int64_t)in[i]*gain/32768);
-        out[i]=(int16_t)sample;
-        if(magnitude(sample)>s->output_peak)s->output_peak=magnitude(sample);
+    const int32_t step_q23 = (gain - start) * 256 / SAMPLES;
+    int32_t ramp_q23 = start * 256;
+    for (unsigned i = 0; i < SAMPLES; i++) {
+        ramp_q23 += step_q23;
+        out[i] = (int16_t)((int32_t)in[i] * (ramp_q23 / 256) / UNITY);
     }
-    if(s->frames!=UINT32_MAX)s->frames++;
+    s->output_gain_q15 = gain;
 }

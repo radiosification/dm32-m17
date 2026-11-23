@@ -54,8 +54,102 @@ static void reference_mod_48(const int8_t *symbols,int16_t pcm[320],unsigned pha
  }
  assert(n==320);
 }
-int main(void) {
+static void write_test_wave(FILE *wave,const int8_t symbols[192]) {
+ if(!wave)return;
+ int16_t pcm[320];
+ m17_modulate(&mod,symbols,pcm);
+ assert(fwrite(pcm,sizeof *pcm,320,wave)==320);
+}
+static void receive_test_frame(FILE *wave,const lsf_t *lsf,frame_t type,uint16_t fn,bool last) {
+ const uint8_t bits[16]={0};
+ int8_t symbols[192];
+ int16_t samples[192];
+ assert(!gen_frame_i8(symbols,bits,type,lsf,fn%6,fn|(last?0x8000:0)));
+ for(unsigned i=0;i<192;i++)samples[i]=symbols[i]*2048;
+ assert(m17_receive_frame(&receiver,samples)==(type==FRAME_STR));
+ write_test_wave(wave,symbols);
+}
+static void start_test_call(FILE *wave,const lsf_t *lsf) {
+ int8_t symbols[192];
+ uint32_t count=0;
+ gen_preamble_i8(symbols,&count,PREAM_LSF);
+ write_test_wave(wave,symbols);
+ receive_test_frame(wave,lsf,FRAME_LSF,0,false);
+}
+static void end_test_call(FILE *wave) {
+ int8_t symbols[192];
+ uint32_t count=0;
+ gen_eot_i8(symbols,&count);
+ write_test_wave(wave,symbols);
+ memset(symbols,0,sizeof symbols);
+ for(unsigned i=0;i<25;i++)write_test_wave(wave,symbols);
+}
+static void test_extended_callsigns(FILE *wave) {
+ const unsigned voice_type=M17_TYPE_STREAM|M17_TYPE_VOICE;
+ lsf_t hotspot,extended,invalid,gps,filtered,direct;
+ assert(!set_LSF(&hotspot,"M0HOT","@ALL",voice_type,NULL));
+ assert(!set_LSF(&extended,"M0HOT","@ALL",voice_type|M17_TYPE_META_EXT_CALL,NULL));
+ assert(!set_LSF_meta_ecd(&extended,"W1CALL","M17-TST A"));
+ invalid=extended;
+ invalid.crc[1]^=1;
+ assert(!set_LSF(&gps,"M0HOT","@ALL",voice_type|M17_TYPE_META_POSITION,NULL));
+ assert(!set_LSF_meta_ecd(&gps,"K1OTHER","M17-GPS B"));
+ assert(!set_LSF(&filtered,"N0OTHER","@ALL",voice_type|M17_TYPE_CAN(1),NULL));
+ assert(!set_LSF(&direct,"N0DIR","@ALL",voice_type,NULL));
+
+ m17_receiver_init(&receiver,NULL,NULL);
+ m17_mod_init(&mod);
+ start_test_call(wave,&hotspot);
+ assert(!strcmp(receiver.caller,"M0HOT")&&!receiver.reflector[0]);
+ for(unsigned f=0;f<24;f++)receive_test_frame(wave,&hotspot,FRAME_STR,f,false);
+ for(unsigned f=24;f<30;f++)receive_test_frame(wave,&invalid,FRAME_STR,f,false);
+ assert(!strcmp(receiver.caller,"M0HOT")&&!receiver.reflector[0]);
+ for(unsigned f=30;f<36;f++) {
+  assert(!strcmp(receiver.caller,"M0HOT"));
+  receive_test_frame(wave,&extended,FRAME_STR,f,false);
+ }
+ assert(!strcmp(receiver.caller,"W1CALL")&&!strcmp(receiver.reflector,"M17-TST A"));
+ assert(!memcmp(&receiver.lsf,&hotspot,sizeof hotspot)&&receiver.lsf_count==1);
+ for(unsigned f=36;f<60;f++)
+  receive_test_frame(wave,f<48?&gps:&hotspot,FRAME_STR,f,f==59);
+ end_test_call(wave);
+ assert(receiver.ended&&receiver.frames==60&&!receiver.lost&&receiver.lsf_count==1);
+ assert(!strcmp(receiver.caller,"W1CALL")&&!strcmp(receiver.reflector,"M17-TST A"));
+
+ start_test_call(wave,&filtered);
+ for(unsigned f=0;f<24;f++)receive_test_frame(wave,&filtered,FRAME_STR,f,f==23);
+ end_test_call(wave);
+
+ start_test_call(wave,&direct);
+ assert(!strcmp(receiver.caller,"N0DIR")&&!receiver.reflector[0]);
+ for(unsigned f=0;f<24;f++)receive_test_frame(wave,&direct,FRAME_STR,f,f==23);
+ end_test_call(wave);
+ if(wave)return;
+
+ start_test_call(NULL,&extended);
+ assert(!strcmp(receiver.caller,"W1CALL")&&!strcmp(receiver.reflector,"M17-TST A"));
+ assert(!set_LSF_meta_ecd(&extended,"K1OTHER",NULL));
+ start_test_call(NULL,&extended);
+ assert(!strcmp(receiver.caller,"K1OTHER")&&!receiver.reflector[0]);
+ assert(!set_LSF_meta_ecd(&extended,"@ALL","M17-TST A"));
+ start_test_call(NULL,&extended);
+ assert(!strcmp(receiver.caller,"M0HOT")&&!receiver.reflector[0]);
+ assert(!set_LSF_meta_ecd(&extended,"","M17-TST A"));
+ start_test_call(NULL,&extended);
+ assert(!strcmp(receiver.caller,"M0HOT")&&!receiver.reflector[0]);
+ puts("PASS extended callsigns from the initial LSF and CRC-checked LICH, retained through META changes and cleared for the next call");
+}
+int main(int argc,char **argv) {
  setbuf(stdout,NULL);
+ if(argc==2) {
+  FILE *wave=fopen(argv[1],"wb");
+  assert(wave);
+  test_extended_callsigns(wave);
+  assert(!fclose(wave));
+  return 0;
+ }
+ assert(argc==1);
+ test_extended_callsigns(NULL);
  /* Verify the optimized FIR against the original 64-bit scalar expression
   * on full-scale samples, impulses and noise, including ring wraparound. */
  static m17_receiver fir_rx;static m17_demodulator fir_demod;

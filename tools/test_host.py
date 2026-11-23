@@ -11,4 +11,7 @@ def main():
  numeric_flags=['-O2','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all','-I'+str(ROOT/'src'),'-I'+str(C2/'inc')]
  run(['clang',*numeric_flags,'tests/test_fixed_codec.c',*codec_sources(),'-o',OUT/'test-fixed-codec'])
  run([OUT/'test-fixed-codec'])
+ radio=ROOT/'firmware/core/radio'
+ run(['clang',*flags,'-I'+str(radio),'tests/test_rx_agc.c',radio/'rx_limiter.c','-o',OUT/'test-rx-agc'])
+ run([OUT/'test-rx-agc'])
 if __name__=='__main__':main()

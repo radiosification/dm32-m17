@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "m17_link.h"
 #include <limits.h>
+enum { ENCRYPTION_MASK = 3u << 3, META_TYPE_MASK = 3u << 5, LICH_COMPLETE = 0x3f };
 static int32_t clamp(int32_t x,int32_t lo,int32_t hi) {return x<lo?lo:x>hi?hi:x;}
 /* Integer slicer, output equivalent to libm17's +/-1,+/-3 convention.
  * Input units: 2048 per symbol level. Keep FEC soft metrics integer. */
@@ -15,9 +16,25 @@ static void soft_bits(uint16_t out[368],const int16_t s[184]) {
   out[intrl_seq[2*i]]=b1;out[intrl_seq[2*i+1]]=b0;
  }
 }
+static unsigned lsf_type(const lsf_t *l) {
+ return ((unsigned)l->type[0]<<8)|l->type[1];
+}
 static bool good_lsf(const lsf_t *l) {
- unsigned type=((unsigned)l->type[0]<<8)|l->type[1];
- return CRC_M17((const uint8_t *)l,30)==0 && (type&7)==(M17_TYPE_STREAM|M17_TYPE_VOICE) && !(type&(3u<<3));
+ unsigned type=lsf_type(l);
+ return CRC_M17((const uint8_t *)l,30)==0 && (type&7)==(M17_TYPE_STREAM|M17_TYPE_VOICE) && !(type&ENCRYPTION_MASK);
+}
+static bool decode_meta_callsign(char out[10],const uint8_t address[6]) {
+ decode_callsign_bytes(out,address);
+ /* Zero and reserved values decode to empty. Only standard callsigns belong here. */
+ return out[0] && out[0]!='@' && out[0]!='#';
+}
+static void update_extended_callsigns(m17_receiver *r,const lsf_t *lsf) {
+ if((lsf_type(lsf)&META_TYPE_MASK)!=M17_TYPE_META_EXT_CALL)return;
+ char caller[sizeof r->caller]={0};
+ if(!decode_meta_callsign(caller,lsf->meta))return;
+ memcpy(r->caller,caller,sizeof r->caller);
+ memset(r->reflector,0,sizeof r->reflector);
+ if(!decode_meta_callsign(r->reflector,lsf->meta+6))r->reflector[0]=0;
 }
 static bool sync_matches(const int16_t *s,const int8_t *pattern) {
  for(unsigned i=0;i<8;i++)if((s[i]>=0)!=(pattern[i]>=0))return false;
@@ -32,6 +49,29 @@ void m17_receiver_end(m17_receiver *r) {
 static void start_call(m17_receiver *r,const lsf_t *lsf) {
  r->lsf=*lsf;r->have_lsf=true;r->ended=false;r->have_fn=false;
  r->lich_mask=0;r->lsf_count++;
+ memset(r->caller,0,sizeof r->caller);
+ memset(r->reflector,0,sizeof r->reflector);
+ decode_callsign_bytes(r->caller,lsf->src);
+ update_extended_callsigns(r,lsf);
+}
+static void receive_lich(m17_receiver *r,const uint16_t *soft) {
+ uint8_t lich[6];
+ if(decode_LICH(lich,soft)!=0)return;
+ unsigned idx=lich[5]>>5;
+ if(idx>=6)return;
+ uint8_t *slot=(uint8_t *)&r->partial+idx*5;
+ unsigned bit=1u<<idx;
+ if(r->have_lsf && (r->lich_mask&bit) && !memcmp(slot,lich,5))return;
+ memcpy(slot,lich,5);
+ r->lich_mask|=bit;
+ if(r->lich_mask!=LICH_COMPLETE || !good_lsf(&r->partial))return;
+ if(!r->have_lsf) {
+  start_call(r,&r->partial);
+ } else if(!memcmp(r->lsf.src,r->partial.src,sizeof r->lsf.src) &&
+           !memcmp(r->lsf.dst,r->partial.dst,sizeof r->lsf.dst) &&
+           !((lsf_type(&r->lsf)^lsf_type(&r->partial))&M17_TYPE_CAN(15))) {
+  update_extended_callsigns(r,&r->partial);
+ }
 }
 int m17_receive_frame(m17_receiver *r,const int16_t s[192]) {
  enum { STREAM_CODED_BITS=272, STREAM_PUNCTURES=2*((2+16)*8+4)-STREAM_CODED_BITS };
@@ -47,12 +87,7 @@ int m17_receive_frame(m17_receiver *r,const int16_t s[192]) {
   start_call(r,&l);
   return 0;
  }
- uint8_t lich[6];
- if(decode_LICH(lich,soft)==0 && (lich[5]>>5)<6) {
-  unsigned idx=lich[5]>>5;
-  memcpy((uint8_t *)&r->partial+idx*5,lich,5);r->lich_mask|=1u<<idx;
-  if(!r->have_lsf && r->lich_mask==63 && good_lsf(&r->partial))start_call(r,&r->partial);
- }
+ receive_lich(r,soft);
  if(viterbi_decode_punctured_ctx(&r->fec,data,soft+96,puncture_pattern_2,STREAM_CODED_BITS,12)==UINT32_MAX) {
   r->bad++;return -1;
  }

@@ -11,7 +11,7 @@ def install():
  shutil.copyfile(M17/'m17.h',inc/'m17.h')
  filters();shutil.copyfile(OUT/'filter_taps.h',inc/'filter_taps.h')
  for name in ['m17_link.c','m17_link.h','m17_modem.c','m17_modem_internal.h',
-              'm17_voice.c','m17_voice.h','mic_audio.c','mic_audio.h']:
+              'm17_voice.c','m17_voice.h','fixed_codec.h','mic_audio.c','mic_audio.h']:
   shutil.copyfile(ROOT/'src'/name,dst/name)
  for name in ['radio_m17.c','radio_m17.h']:shutil.copyfile(ROOT/'integration'/name,FW/'core/dv'/name)
  codec=codec_sources()

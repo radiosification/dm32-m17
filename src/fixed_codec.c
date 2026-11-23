@@ -128,7 +128,6 @@ static void amplitudes(const uint32_t lsp[10],uint32_t wo,int L,int32_t energy,i
   amp[m]=sum?(int32_t)exp2q((log2q(sum)+gain)/2+8*65536):0;
   if(amp[m]>33554431)amp[m]=33554431;
  }
- if(wo<80530637u)amp[1]=mul(amp[1],34359738,30); /* 150 Hz correction */
 }
 static int16_t q8_to_pcm(int32_t sample) {
     const int32_t pcm = sample / 256;
@@ -253,7 +252,7 @@ static bool repair_lsp(const fixed_decoder *s, unsigned lsp_hz[10],
     return true;
 }
 
-void m17_fixed_decode(void *state,int16_t *speech,const uint8_t *bits) {
+bool m17_fixed_decode(void *state,int16_t *speech,const uint8_t *bits) {
  fixed_decoder *s=state;unsigned at=0;int v0=unpack(bits,&at,1),v1=unpack(bits,&at,1);
  unsigned wi=(unsigned)unpack(bits,&at,7),ei=(unsigned)unpack(bits,&at,5);
  uint32_t wo=26843546u+(uint32_t)((wi*7340032u+2)/5);
@@ -269,7 +268,7 @@ void m17_fixed_decode(void *state,int16_t *speech,const uint8_t *bits) {
  if(hz>=4000u&&!repair_lsp(s,lsp_hz,indices)) {
   conceal_packet(s,speech);
   s->phase+=160u*s->wo;
-  return;
+  return false;
  }
  for(unsigned j=0;j<10;j++)lsp[j]=(uint32_t)(((uint64_t)lsp_hz[j]<<32)/8000);
  uint32_t iw=26843546;
@@ -283,6 +282,7 @@ void m17_fixed_decode(void *state,int16_t *speech,const uint8_t *bits) {
   synthesize(s,speech+half*80,w,L,half?v1:v0,amp,re,im);
  }
  s->wo=wo;s->voiced=v1;s->energy=e;memcpy(s->lsp,lsp,sizeof lsp);
+ return v0||v1;
 }
 
 typedef struct __attribute__((may_alias)) {

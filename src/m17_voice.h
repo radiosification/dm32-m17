@@ -17,7 +17,7 @@ typedef struct {
  void *ctx;
  uint32_t rx_lsf_count;
  uint16_t seq;
- bool transmitting;
+ bool transmitting, rx_voiced;
 } m17_voice;
 void m17_voice_init(m17_voice *,m17_speaker_sink,void *);
 int m17_voice_tx_begin(m17_voice *,const char *source,const char *destination,unsigned can,int8_t lsf[192]);
